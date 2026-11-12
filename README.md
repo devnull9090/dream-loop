@@ -34,6 +34,19 @@ At the moment this is only tested with GPT-6 Astra in Codex. Other strong models
 
 The critic also works on its own. If you already have a target image and a product, ask your agent to "use dream-loop to review this capture against the target". It prepares a side-by-side sheet and zoomed probes, gets a verdict from an independent critic, and reports the score, the first gate that fails, regressions since the last capture and the fixes needed, along with anything it left out or could not judge from a still.
 
+## Modelling a 3D subject in Blender
+
+For a character, creature or prop that has to match an approved design sheet, ask your agent to "use dream-loop to model this in Blender". This mode was built from a real art session in which whole-image reviews kept a creature model stuck for seven rounds, and it works differently from the scene loop:
+
+1. The target is turned into a **blueprint** once: the parts, each part's size as a ratio of the subject's height, joints, sampled colours, form notes, and every view with a camera estimate.
+2. A **view-match gate** solves one camera per view and freezes it. Nothing is judged until the model's silhouette overlays the target's.
+3. **Layout is measured**, not judged: a flat ID-colour mask render gives every part's projected size and position, compared with the blueprint in numbers ("leg height: target 0.42 H, currently 0.55 H").
+4. A fast **inner loop** in Blender (render, view match, measure; seconds, no critic) runs after every change. The **outer loop**, a capture of the real product plus independent critics, is entered only when the inner checks pass.
+5. Critics review **one part at a time** from crops cut automatically from that part's bounds. Parts that pass are confirmed by a second critic and locked; a locked part that changes is a regression.
+6. Work goes in a fixed order: blockout, proportion lock, secondary forms, colour and material, surface detail. A model that fails layout badly is rebuilt from a blockout, not repaired.
+
+It needs Blender, headless or an open session with the blender-mcp add-on. See [references/blender-mode/workflow.md](references/blender-mode/workflow.md).
+
 ## Example
 
 Prompt:
@@ -51,8 +64,11 @@ This fork is maintained here. Report problems, share results and ask questions i
 
 If you open a PR, please provide example results produced by the skill, to ensure the changes don't regress performance.
 
-Run the checks before opening one (Node 18+):
+Run the checks before opening one (Node 18+, Python 3 with Pillow):
 
 ```sh
 node --test scripts/fal-batch.test.mjs scripts/links.test.mjs
+python -m unittest discover -s scripts -p "*_test.py"
 ```
+
+The Python tests that drive Blender are skipped when Blender is not installed.
