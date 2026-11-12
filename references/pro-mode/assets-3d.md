@@ -30,6 +30,8 @@ If image-to-3D is blocked, disallowed, or overkill, move on to 3.
 
 Blender is the next option if installed locally. You can use its Python scripting interface.
 
+For a key asset that has to match the target closely (a character, a creature, a hero prop), follow [the Blender workflow](../blender-mode/workflow.md) for that asset: it measures proportions against a blueprint of the target and reviews the model part by part.
+
 You'll need to texture and add additional detail (e.g. normal maps) via image generation.
 
 If Blender is unavailable or overkill, move on to 4.
