@@ -35,6 +35,23 @@ def median_colour(strips):
     return [sorted(v)[len(v) // 2] for v in values]
 
 
+def border_strips(image):
+    edge = max(2, min(image.size) // 50)
+    return [image.crop((0, 0, image.width, edge)), image.crop((0, image.height - edge, image.width, image.height)),
+            image.crop((0, 0, edge, image.height)), image.crop((image.width - edge, 0, image.width, image.height))]
+
+
+def border_key(image, tolerance=KEY_TOLERANCE):
+    """Key an image against the colour of its own border.
+
+    Returns (mask, share of the border that is that colour); a low share means the background is not flat."""
+    image = image.convert("RGB")
+    strips = border_strips(image)
+    colour = median_colour(strips)
+    flat = sum(area(near(s, colour, tolerance)) for s in strips) / sum(s.width * s.height for s in strips)
+    return ImageChops.invert(near(image, colour, tolerance)).filter(ImageFilter.MedianFilter(5)), flat
+
+
 def target_silhouette(target, view, tolerance=KEY_TOLERANCE):
     """The subject's silhouette in one target view, cropped to its subject_box.
 
@@ -50,9 +67,7 @@ def target_silhouette(target, view, tolerance=KEY_TOLERANCE):
         if background == "none":
             return None, {"method": "key", "reliable": False, "reason": "the blueprint says this view's background cannot be keyed"}
         frame = crop_box(target, view["frame"])
-        edge = max(2, min(frame.size) // 50)
-        strips = [frame.crop((0, 0, frame.width, edge)), frame.crop((0, frame.height - edge, frame.width, frame.height)),
-                  frame.crop((0, 0, edge, frame.height)), frame.crop((frame.width - edge, 0, frame.width, frame.height))]
+        strips = border_strips(frame)
         colour = median_colour(strips) if background == "auto" else [int(background[i:i + 2], 16) for i in (1, 3, 5)]
         flat = sum(area(near(s, colour, tolerance)) for s in strips) / sum(s.width * s.height for s in strips)
         if background == "auto" and flat < 0.85:
