@@ -8,35 +8,20 @@ Prerequisites:
 The loop:
 1. Take a first pass at implementing the target
 2. Test and validate the product yourself and ensure it works and looks as you intend
-3. Capture a screenshot of the product's current state
-4. Submit the screenshot + target image to an independent judge subagent with a fresh context (see below for how to set up the judge).
-5. Address all of the judge's feedback carefully
-6. Test and validate the product yourself and ensure it works and looks as you intend
-7. Evaluate exit criteria (below). If you should exit, stop here. If not, return to step 3 and loop again.
+3. Run a review round as described in [review.md](../review.md): capture, prepare the comparison, and get a verdict from an independent critic with a fresh context
+4. Address the verdict carefully: every regression it lists first, then its blockers, then its next items. If the critic says a model, the lighting or the camera needs redoing, redo it; do not patch around it
+5. Test and validate the product yourself and ensure it works and looks as you intend
+6. Evaluate exit criteria (below). If you should exit, stop here. If not, return to step 3 and loop again.
 
 ## 3D Assets
 
 During implementation, you may need 3D assets. At such times, consult [references/pro-mode/assets-3d.md](assets-3d.md) to decide how to get them. Do not just make procedural assets out of laziness, read the doc and make the correct decision.
 
-## Judge
+## Critic
 
-Judging should ideally be done by a fresh subagent with a clean context each time, to keep it objective and cheap.
+The critic's instructions are in [critic.md](../critic.md); you do not need to read them to run a round. It judges four gates in order (layout, light and colour, form and materials, fine detail) and the score is capped by the first gate that fails, so a capture with the wrong layout cannot score above 3 however good its materials are.
 
-The judge should be given the latest live screenshot, the target image, the previous round's screenshot and verdict if any, and this prompt:
-
-> You are judging how close the current product is relative to the target image. Score along this rubric:
->
-> - **Composition (0-3):** Are the camera, framing, and layout correct? Are the position and scale of all major components correct compared to the target image?
-> - **Lighting (0-3):** Check color palette, exposure, shadows, contrast, and atmosphere. Pay attention to reflections, glows, etc. Ensure the scene overall is not too dark or too light compared to the target.
-> - **Materials (0-3):** Check that every surface looks right, with the expected textures, roughness, translucency, wetness, etc. Ensure assets don't look blocky, plasticky, smooth, or fake, unless the target image specifically also does this.
-> - **Details (0-1):** Go through everything with a fine-toothed comb. Not a single pixel should be different. Every tiny speck and detail should match between the two images.
->
-> You can give fractional scores. You should be nitpicky and precise, and include a list of all gaps and blockers that need to be resolved for a perfect score on each category. It's OK to output a gigantic list if the current product is nowhere close to the target. It needs to be comprehensive and actionable so that another agent could go fix everything on the list, come back, and get a substantially improved score. Avoid non-actionable feedback like "This tree looks fake." You need to name exactly what's giving that impression and how the agent should fix it.
-> Everything is within reason. If models or scenes need to be completely redesigned, say so. Don't sugarcoat it. The goal is for both images to be identical. The product should exactly reach the target. Do not settle for less.
->
-> You should lastly also provide a total score out of 10 by summing these up.
->
-> If a previous verdict and screenshot are provided, maintain consistency with prior judgment, but do not feel obligated to match or increase score. If the product regressed, it should score worse.
+The verdict is JSON. `score` and "the judge" in the exit criteria below mean that verdict.
 
 ## Exit criteria
 
