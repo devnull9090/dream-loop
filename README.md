@@ -41,6 +41,6 @@ GPT-6 Astra on high effort in Codex:
 
 ## Contributing
 
-This fork is maintained here, so send feedback, results and edits as pull requests against [devnull9090/dream-loop](https://github.com/devnull9090/dream-loop) (issues are disabled on this repository). Changes that would help everyone are also worth offering to the [original](https://github.com/achimala/dream-loop).
+This fork is maintained here. Report problems, share results and ask questions in [issues](https://github.com/devnull9090/dream-loop/issues), and send edits as pull requests against [devnull9090/dream-loop](https://github.com/devnull9090/dream-loop). Changes that would help everyone are also worth offering to the [original](https://github.com/achimala/dream-loop).
 
 If you open a PR, please provide example results produced by the skill, to ensure the changes don't regress performance.
