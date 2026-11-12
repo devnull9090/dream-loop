@@ -2,6 +2,8 @@
 
 By [@anshuc](https://x.com/anshuc).
 
+> **This is a maintained fork.** [devnull9090/dream-loop](https://github.com/devnull9090/dream-loop) is forked from [achimala/dream-loop](https://github.com/achimala/dream-loop), the original by @anshuc. We use it in our own projects and actively maintain this version, folding in what we learn as we keep iterating: critic calibration, token cost, and review of real engine captures against approved targets. Changes land here as pull requests with the evidence behind them.
+
 An agent skill that builds a game, app, or scene with impressive visuals, by creating a closed loop:
 
 1. AI "dreams" up a high-quality target screenshot using image generation
@@ -12,7 +14,7 @@ An agent skill that builds a game, app, or scene with impressive visuals, by cre
 
 ## Installation
 
-`npx skills add achimala/dream-loop`, or clone into your agent's skills directory, or paste the link into your agent and tell it to figure it out.
+`npx skills add devnull9090/dream-loop` for this fork (`npx skills add achimala/dream-loop` for the original), or clone into your agent's skills directory, or paste the link into your agent and tell it to figure it out.
 
 ## Prerequisites
 
