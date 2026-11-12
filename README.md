@@ -48,3 +48,9 @@ GPT-6 Astra on high effort in Codex:
 I'd love to hear feedback, see results, and accept edits to the skill.
 
 If you open a PR, please provide example results produced by the skill, to ensure the changes don't regress performance.
+
+Run the checks before opening one (Node 18+):
+
+```sh
+node --test scripts/fal-batch.test.mjs scripts/links.test.mjs
+```
