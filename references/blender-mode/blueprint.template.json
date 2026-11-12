@@ -1,0 +1,59 @@
+{
+ "version": 1,
+ "subject": "name of the character, creature or object",
+ "target": "target.png",
+ "reference_view": "side",
+ "reference_part": "head",
+ "views": [
+  {
+   "id": "side",
+   "pose": "standing",
+   "frame": [0.0, 0.0, 0.5, 1.0],
+   "subject_box": [0.1, 0.1, 0.3, 0.8],
+   "background": "auto",
+   "camera": {"yaw": 90, "pitch": 0, "lens": 85}
+  },
+  {
+   "id": "front",
+   "pose": "standing",
+   "frame": [0.5, 0.0, 0.5, 1.0],
+   "subject_box": [0.62, 0.1, 0.26, 0.8],
+   "background": "auto",
+   "camera": {"yaw": 0, "pitch": 0, "lens": 85}
+  }
+ ],
+ "parts": [
+  {
+   "id": "head",
+   "objects": ["Head*", "Jaw*"],
+   "form": "One sentence or two on the shape: main volume, taper, edges, what makes it read as this part.",
+   "colours": [{"name": "shell", "at": {"view": "side", "point": [0.25, 0.2]}}],
+   "boxes": {"side": [0.2, 0.1, 0.16, 0.2], "front": [0.68, 0.1, 0.14, 0.2]}
+  },
+  {
+   "id": "torso",
+   "objects": ["Torso*"],
+   "form": "Describe the torso's volume and how it joins the head and the legs.",
+   "colours": [{"name": "plate", "at": {"view": "side", "point": [0.25, 0.45]}}],
+   "boxes": {"side": [0.16, 0.3, 0.2, 0.3], "front": [0.65, 0.3, 0.2, 0.3]}
+  },
+  {
+   "id": "leg_l",
+   "objects": ["Leg.L*"],
+   "form": "Describe the leg: segments, where it is thickest, how the knee and ankle read.",
+   "colours": [{"name": "limb", "at": {"view": "front", "point": [0.8, 0.75]}}],
+   "boxes": {"side": [0.18, 0.6, 0.12, 0.3], "front": [0.76, 0.6, 0.09, 0.3]}
+  },
+  {
+   "id": "leg_r",
+   "objects": ["Leg.R*"],
+   "same_as": "leg_l",
+   "boxes": {"front": [0.65, 0.6, 0.09, 0.3]}
+  }
+ ],
+ "joints": [
+  {"id": "neck", "parts": ["head", "torso"], "points": {"side": [0.26, 0.3], "front": [0.75, 0.3]}},
+  {"id": "hip_l", "parts": ["torso", "leg_l"], "points": {"front": [0.8, 0.6]}}
+ ],
+ "tolerances": {}
+}
