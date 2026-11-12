@@ -6,6 +6,8 @@ A review round compares one capture with its target and returns a verdict from a
 
 Capture the product at the target's resolution and aspect ratio and save it as `.dream-loop/captures/round-N.png`. Keep earlier rounds.
 
+For a browser product without a screenshot tool, `scripts/preview-server.py` serves the workspace on `127.0.0.1:4172` and saves any PNG the page POSTs to `/__capture` (for example from `canvas.toBlob`) as `.dream-loop/captures/latest.png`; copy that to `round-N.png`.
+
 ## 2. Prepare the images
 
 Resolve the script path from this skill's directory (needs Python with Pillow):
@@ -45,3 +47,12 @@ Save the reply as `.dream-loop/verdicts/round-N.json`. If it is not a single val
 Act on `regressions` first, then `blockers`, then `next`. The score places the capture on the scale; use `score - previous_score` from the same verdict, not the difference from last round's verdict, to tell whether the round helped, because two critics differ by a few tenths on the same image.
 
 One critic per round is enough. Use several only for independent views (different screens or cameras), one critic each.
+
+## Review only
+
+Use this when there is no build loop to run: the user has a target and a product and wants a verdict, or you are iterating on the product yourself and want an independent check after each change.
+
+- The target is whatever the user approved. Pass its path as `--target`; do not regenerate or alter it. Never substitute a concept render or paintover for a capture of the real product.
+- Keep working files in `.dream-loop` as above (gitignore it), with one `round-N` per capture, so later rounds can show what changed.
+- Run steps 1 to 4, then `python /path/to/dream-loop/scripts/verdict.py .dream-loop/verdicts`. It checks the verdict and, when you are iterating, says whether to continue, rethink, get a confirming second critic or stop. Its decisions are explained in [pro-mode/workflow.md](pro-mode/workflow.md) under "Deciding what to do next"; that is the only part of that file you need.
+- Report the verdict as it stands: score, first failed gate, regressions, blockers, and everything under `excluded` and `unverifiable`. Do not round the score up, drop items, or describe a capture as passing unless two critics passed it.

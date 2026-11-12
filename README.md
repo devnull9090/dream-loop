@@ -6,8 +6,8 @@ An agent skill that builds a game, app, or scene with impressive visuals, by cre
 
 1. AI "dreams" up a high-quality target screenshot using image generation
 2. AI builds with this target in mind
-3. A separate AI critic compares the live screenshot to the target and provides feedback
-4. AI loops back to step 2 until critic is satisfied
+3. A separate AI critic compares the live screenshot to the target, gate by gate (layout, light and colour, form and materials, fine detail), and returns a scored verdict with the fixes that matter most
+4. AI loops back to step 2 until two independent critics pass it, or progress stalls
 5. Optionally, AI loops back to step 1 and dreams up an even better target based on the current state.
 
 ## Installation
@@ -22,9 +22,15 @@ You need an AI agent with:
 - vision input
 - subagents (optional but strongly preferred)
 
+Python 3 with Pillow (`python -m pip install Pillow`) is used to prepare the comparison images the critic reads; without it the critic falls back to the raw images.
+
 Install Blender if you want custom 3D modeling. The Blender MCP or scripting interface is preferred to computer use; it produces better results.
 
 At the moment this is only tested with GPT-6 Astra in Codex. Other strong models like Claude Fable 5.1 can likely work too.
+
+## Reviewing without building
+
+The critic also works on its own. If you already have a target image and a product, ask your agent to "use dream-loop to review this capture against the target". It prepares a side-by-side sheet and zoomed probes, gets a verdict from an independent critic, and reports the score, the first gate that fails, regressions since the last capture and the fixes needed, along with anything it left out or could not judge from a still.
 
 ## Example
 

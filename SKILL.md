@@ -1,6 +1,6 @@
 ---
 name: dream-loop
-description: Build a game or app from a description so that a live screenshot matches a generated rendering. Use when the user says "dream loop" or asks for something built to a very high level of graphical fidelity.
+description: Build a game or app from a description so that a live screenshot matches a generated rendering. Use when the user says "dream loop" or asks for something built to a very high level of graphical fidelity. Also use to review an existing screenshot or engine capture against a target image with an independent critic.
 license: MIT
 ---
 
@@ -9,8 +9,9 @@ license: MIT
 This is a process for you to autonomously build extremely impressive visuals, especially for 3D scenes (e.g. in a game or app).
 
 Your first step is to determine which workflow to use:
+- If the user only wants an existing product judged against a target image they already have (a review, critique or score), or you are iterating on a product outside this skill and want an independent check, read [references/review.md](references/review.md) and follow its "Review only" section. Do not read either workflow, and skip the rest of this document.
 - If the user told you to use the Plus or Pro workflow explicitly, that's your answer
-- If not, check if the user is on a low or high tier coding subscription. "Low tier" means ChatGPT Plus or equivalent. "High tier" means ChatGPT Pro. For low-tier subscriptions, use the Plus workflow. For high-tier, use the Pro workflow.
+- If not, check if the user is on a low or high tier coding subscription. "Low tier" means ChatGPT Plus, Claude Pro or equivalent. "High tier" means ChatGPT Pro, Claude Max or equivalent. For low-tier subscriptions, use the Plus workflow. For high-tier, use the Pro workflow.
 
 Plus workflow: read [references/plus-mode/workflow.md](references/plus-mode/workflow.md)
 
