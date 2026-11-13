@@ -1,5 +1,5 @@
 """Blender side of Dream Loop's 3D mode: camera setup, flat ID-colour mask renders, per-part
-bounds and hashes, camera sweeps and blockouts.
+bounds and hashes, close-up crops, camera sweeps and blockouts.
 
 This file runs inside Blender. Do not run it directly; scripts/blender_run.py starts it either
 headless (blender -b scene.blend --python dream_loop_bpy.py -- request.json) or in an open
@@ -307,6 +307,20 @@ def frame_size(view_size, long_edge):
     return [int(v) // 2 * 2 for v in size]
 
 
+def picture_settings(scene, path, resolution, others, beauty):
+    """Scene settings for a picture of the subject alone: the scene's own engine, or a quick Workbench preview."""
+    pairs = [(scene.render, "resolution_x", resolution[0]), (scene.render, "resolution_y", resolution[1]),
+             (scene.render, "resolution_percentage", 100), (scene.render, "filepath", path),
+             (scene.render.image_settings, "file_format", "PNG"), (scene.render.image_settings, "color_mode", "RGBA"),
+             (scene.render, "film_transparent", True), (scene.render, "use_border", False)]
+    pairs += [(obj, "hide_render", True) for obj in others]
+    if beauty == "preview":  # seconds, not minutes: Workbench with the materials' own colours
+        shading = scene.display.shading
+        pairs += [(scene.render, "engine", "BLENDER_WORKBENCH"), (shading, "light", "STUDIO"),
+                  (shading, "color_type", "MATERIAL"), (shading, "color_type", "TEXTURE"), (shading, "show_cavity", True)]
+    return pairs
+
+
 def render_view(scene, blueprint, view, out_dir, camera_spec=None, long_edge=1024, beauty="preview"):
     """ID mask, part data and (optionally) a picture of one view. Writes <view>.ids.png, <view>.ids.json, <view>.png."""
     size = blueprint["target_size"]
@@ -328,16 +342,7 @@ def render_view(scene, blueprint, view, out_dir, camera_spec=None, long_edge=102
             entry.update(objects=0, visible=0.0)
         data["parts"][part] = entry
     if beauty != "none":
-        pairs = [(scene.render, "resolution_x", resolution[0]), (scene.render, "resolution_y", resolution[1]),
-                 (scene.render, "resolution_percentage", 100), (scene.render, "filepath", base + ".png"),
-                 (scene.render.image_settings, "file_format", "PNG"), (scene.render.image_settings, "color_mode", "RGBA"),
-                 (scene.render, "film_transparent", True)]
-        pairs += [(obj, "hide_render", True) for obj in others]
-        if beauty == "preview":  # seconds, not minutes: Workbench with the materials' own colours
-            shading = scene.display.shading
-            pairs += [(scene.render, "engine", "BLENDER_WORKBENCH"), (shading, "light", "STUDIO"),
-                      (shading, "color_type", "MATERIAL"), (shading, "color_type", "TEXTURE"), (shading, "show_cavity", True)]
-        with restored(pairs):
+        with restored(picture_settings(scene, base + ".png", resolution, others, beauty)):
             bpy.ops.render.render(write_still=True)
         data["picture"] = os.path.basename(base + ".png")
     with open(base + ".ids.json", "w", encoding="utf-8") as handle:
@@ -359,6 +364,33 @@ def command_render(request):
                                  "unassigned": data["unassigned"],
                                  "missing": [p for p, e in data["parts"].items() if not e["objects"]]}
     return {"views": views}
+
+
+def command_closeups(request):
+    """A picture of each requested part alone in its frame, at a size that gives the part the pixels asked for.
+
+    Each item names a view, a part, the box to render (x, y, w, h as fractions of the view's frame,
+    from the top left) and the frame's long edge. Only that box is rendered, so a large frame costs
+    little. The camera is the view's own, so the crop lines up with the mask render."""
+    scene = bpy.context.scene
+    blueprint = request["blueprint"]
+    os.makedirs(request["out"], exist_ok=True)
+    size = blueprint["target_size"]
+    done = []
+    for view in blueprint["views"]:
+        for item in [i for i in request["items"] if i["view"] == view["id"]]:
+            resolution = frame_size((view["frame"][2] * size[0], view["frame"][3] * size[1]), item["long_edge"])
+            _, _, _, others, _ = view_setup(scene, blueprint, view, (request.get("cameras") or {}).get(view["id"]), resolution)
+            x, y, w, h = item["box"]
+            path = os.path.join(request["out"], f"{item['part']}.{view['id']}.render.png")
+            render = scene.render
+            pairs = picture_settings(scene, path, resolution, others, request.get("beauty", "preview"))
+            pairs += [(render, "use_border", True), (render, "use_crop_to_border", True), (render, "border_min_x", x),
+                      (render, "border_max_x", min(1.0, x + w)), (render, "border_min_y", max(0.0, 1 - y - h)), (render, "border_max_y", 1 - y)]
+            with restored(pairs):
+                bpy.ops.render.render(write_still=True)
+            done.append({"view": view["id"], "part": item["part"], "file": path.replace("\\", "/"), "long_edge": item["long_edge"]})
+    return {"closeups": done}
 
 
 def command_sweep(request):
@@ -423,7 +455,8 @@ def command_info(request):
             "objects": [o.name for o in scene.objects if o.type in GEOMETRY]}
 
 
-COMMANDS = {"render": command_render, "sweep": command_sweep, "blockout": command_blockout, "info": command_info}
+COMMANDS = {"render": command_render, "sweep": command_sweep, "closeups": command_closeups, "blockout": command_blockout,
+            "info": command_info}
 
 
 def run(request):

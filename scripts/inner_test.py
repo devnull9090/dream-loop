@@ -126,7 +126,8 @@ class Built(unittest.TestCase):
         return str(self.root / name)
 
     def run_inner(self, *extra):
-        return call(inner, "--blueprint", str(self.blueprint), "--blend", str(self.blend), *extra)
+        size = () if "--long-edge" in extra else ("--long-edge", "768")  # smaller than the default, to keep the suite quick
+        return call(inner, "--blueprint", str(self.blueprint), "--blend", str(self.blend), *size, *extra)
 
 
 @unittest.skipUnless(BLENDER, "Blender is not installed")
@@ -134,7 +135,7 @@ class EndToEndTest(Built):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        cls.inner = call(inner, "--blueprint", str(cls.blueprint), "--blend", str(cls.blend))
+        cls.inner = call(inner, "--blueprint", str(cls.blueprint), "--blend", str(cls.blend), "--long-edge", "768")
 
     def test_1_blueprint_and_blockout(self):
         for status, _, err in self.steps:
@@ -225,6 +226,25 @@ class OutlineTest(Built):
         self.assertEqual((result["stage"], result["form"]["head"]["status"]), ("outer", "pass"))
         self.assertGreater(min(result["form"]["head"]["overlap"].values()), 0.93)
         self.assertTrue((self.root / "inner" / "head.form.png").exists())
+        self.assertEqual(result["closeups"], (self.root / "inner" / "close").as_posix())  # every part, cut from the 512 px renders
+        entries = json.loads((self.root / "inner" / "close" / "close.json").read_text(encoding="utf-8"))
+        self.assertEqual((sorted(entries), entries["leg_r"][0]["source"]), (["body", "head", "leg_l", "leg_r"], "crop"))
+        self.assertLess(entries["head"][0]["model_px"], 140)  # a quarter of a 512 px frame: enlarged four times to fill the sheet
+
+        # Working on the head alone: Blender renders its crops at full size, and only its outline is in question.
+        status, result, err = self.run_inner("--long-edge", "512", "--part", "head", "--close", "render", "--out", str(self.root / "head"))
+        self.assertEqual((status, err), (0, ""), result)
+        self.assertEqual((list(result["closeups"]), list(result["form"])), (["head"], ["head"]))
+        entries = json.loads((self.root / "head" / "close" / "close.json").read_text(encoding="utf-8"))
+        self.assertEqual([(e["view"], e["source"]) for e in entries["head"]], [("side", "render"), ("front", "render")])
+        for entry in entries["head"]:
+            self.assertAlmostEqual(entry["model_px"], 512, delta=12)
+            self.assertTrue(Path(entry["file"]).exists())
+        with Image.open(self.root / "head" / "close" / "head.front.render.png") as crop:
+            self.assertAlmostEqual(max(crop.size), 512 * (1 + 2 * 0.1), delta=16)  # only the part's padded box was rendered
+            self.assertGreater(crop.convert("RGBA").getchannel("A").getextrema()[1], 0)
+            alpha = crop.convert("RGBA").getchannel("A").point(lambda v: 255 if v > 127 else 0).getbbox()
+            self.assertAlmostEqual((alpha[0] + alpha[2]) / 2, crop.width / 2, delta=0.08 * crop.width)  # and the part sits in the middle of it
 
         # A box with the head's bounds passes every measure of size and place, and fails on shape, with where.
         status, result, _ = self.run_inner("--long-edge", "512", "--setup", self.script("box_head.py", BOX_HEAD), "--out", str(self.root / "box"))

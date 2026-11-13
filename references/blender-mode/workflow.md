@@ -21,7 +21,7 @@ Resolve script paths from this skill's directory; `SCRIPTS` below stands for `/p
 | `ledger.json` | Facts agreed since. |
 | `refs/` | Extra views and part close-ups generated from the target, with `refs.json`. Optional. |
 | `config.json`, `secrets.env` | Image-generation settings and the API key, when references are generated. |
-| `inner/` | The latest inner-loop renders, side-by-side sheets and outline differences (`<part>.form.png`). |
+| `inner/` | The latest inner-loop renders, side-by-side sheets, outline differences (`<part>.form.png`) and part close-ups (`close/<part>.<view>.png`). |
 | `rounds/round-N/` | One outer round: renders, captures, part folders, verdicts. |
 
 `WHERE` in the commands is how to reach Blender: `--blend model.blend` (headless), `--setup build_model.py` (headless, the script builds the model; add `--blend` to start from a file) or `--socket` (the open session). Prefer whichever rebuilds fastest.
@@ -86,6 +86,16 @@ Parts with no outline skip the `form` stage. `notes` lists outlines that could n
 
 `.dream-loop/inner/<view>.side.png` shows the target beside the model with every part's box drawn, failures in red. Look at it; do not ask anyone else to.
 
+**Work from the close-ups, not the whole-view sheets.** On a whole view a part is about a hundred pixels across, which is enough to check a box and not enough to model from. Every run also writes `.dream-loop/inner/close/<part>.<view>.png` for each part in each view that shows it: the target crop beside the model, with the same margin, both scaled so the part's longer side is 512 px, and the outline difference when the part has an outline there. Each sheet says how many pixels the part really had on the target and in the render, so you know when you are looking at an enlargement. Read the close-up of the part you are changing after every change.
+
+**Work on one part at a time.** From stage 3 on, pick a part and stay on it:
+
+```sh
+python SCRIPTS/inner.py --blueprint .dream-loop/blueprint.json WHERE --part head --close render
+```
+
+`--part` (repeatable) writes only that part's close-ups and counts only its outline at the `form` stage, so the run passes when that part's shape is right; the view match and the measured layout still cover the whole subject, so a change that pushes a neighbour out of place is caught. `--close render` has Blender render each crop at full size (only the part's box is rendered, so it is quick) instead of enlarging a crop of the whole view; `--close scene` does the same with the scene's own engine and materials, for stages 4 and 5. `--part-edge` sets the size (default 512) and `--long-edge` the size of the whole-view renders (default 1536).
+
 The first run solves each view's camera: it tries a window of cameras round the blueprint's estimate, keeps the best and freezes it in `cameras.json`. Make that first run on the blockout, not on an older model: a camera solved against the wrong shape is the wrong camera. From then on every render and every capture of that view uses that camera. If the result warns that the best camera is at the edge of the window, the estimate in the blueprint is wrong or the blockout's shape is; fix that and solve again with `viewmatch.py --sweep ... --resolve "reason"`. Never re-solve a camera to make a failing model pass.
 
 Stay in this loop through stages 1 and 2, and come back to it after every edit in the later stages: a form change that breaks a proportion is caught here in seconds.
@@ -95,6 +105,8 @@ Stay in this loop through stages 1 and 2, and come back to it after every edit i
 Enter it only when `inner.py` exits with status 0.
 
 **Capture every view of the real product.** If Blender is the product, render with the scene's own engine: `inner.py ... --beauty scene --out .dream-loop/outer`. If the product is a game engine, export, then capture each view there with the camera written to that view's `<view>.ids.json` by the latest render: `camera.location` and `camera.target` in scene units, `fov_h` and `fov_v` in degrees, or `yaw`, `pitch`, `distance_H` and `height_H` relative to the subject (yaw 0 faces the subject's front; the camera aims at the centre of its bounds). Use the aspect ratio in `resolution`, and a plain backdrop if you can. Every view needs its own capture: a round with captures for only some views does not start.
+
+Capture large enough for the smallest part. A critic judges a part from a crop of the capture, and a crop under about 256 px on the part's longer side comes back with `target_unclear` or with guesses. `prepare` lists such parts under `notes` with the capture size that would fix it. When Blender is the product that is `inner.py --long-edge`; the default of 1536 suits a subject of a dozen parts.
 
 **Prepare the round:**
 
@@ -110,7 +122,7 @@ A part that fails its outline is not sent: it is listed under `held` with the di
 **Ask one critic per part listed.** Use a subagent with a fresh, empty context for each; run them in parallel. Give each one only:
 
 - the absolute path to [part-critic.md](part-critic.md), with the instruction to read it and act as that critic;
-- the absolute path to that part's folder (`rounds/round-N/parts/<part>`);
+- the absolute path to that part's folder (`rounds/round-N/parts/<part>`); it holds `brief.json` and the picture sheets the brief lists under `pairs`;
 - the round number.
 
 If the user has approved generated close-ups of a part, `prepare` has already put them in that part's folder, marked as generated, with the rule that the target wins. Do not hand a critic any other generated image.

@@ -17,6 +17,24 @@ def crop_box(image, box):
     return image.crop((left, top, max(left + 1, round((box[0] + box[2]) * image.width)), max(top + 1, round((box[1] + box[3]) * image.height))))
 
 
+def padded(box, pad=0.15, size=(1, 1)):
+    """A box grown on every side by a share of its longer side, kept inside the image.
+
+    size is the image's width and height, so the margin is the same number of pixels on every side
+    whatever the image's shape; left out, the image is taken to be square."""
+    grow = pad * max(box[2] * size[0], box[3] * size[1])
+    x0, y0 = max(0.0, box[0] - grow / size[0]), max(0.0, box[1] - grow / size[1])
+    return [x0, y0, min(1.0, box[0] + box[2] + grow / size[0]) - x0, min(1.0, box[1] + box[3] + grow / size[1]) - y0]
+
+
+def flatten(image):
+    """A capture or render on a neutral ground, so transparent pixels do not read as black holes."""
+    image = image.convert("RGBA")
+    ground = Image.new("RGB", image.size, (40, 40, 40))
+    ground.paste(image, mask=image.getchannel("A"))
+    return ground
+
+
 def area(mask):
     return mask.histogram()[255]
 
