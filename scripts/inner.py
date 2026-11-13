@@ -13,7 +13,13 @@ Run it after every change to the model. It takes seconds:
  4. measures every part against the blueprint (measure.py) and writes <view>.side.png,
     target beside product with the part boxes drawn;
  5. compares every part that has an outline in the blueprint with that outline (form.py) and
-    writes <part>.form.png, where the two shapes differ.
+    writes <part>.form.png, where the two shapes differ;
+ 6. writes a close-up of every part in every view that shows it (closeup.py): close/<part>.<view>.png,
+    target crop beside the model at the same scale, 512 px on the part's longer side.
+
+--part ID (repeatable) is for working on one part: only its close-ups are written, and only its
+outline counts at the form stage, so the run passes when that part's shape is right. The view
+match and the measured layout always cover the whole subject.
 
 Prints one JSON line: "stage" says where the model stands (blockout until the silhouettes
 match, proportion until every measure passes, form until every outlined part's shape matches
@@ -29,6 +35,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import blender_run  # noqa: E402
 import blueprint as blueprints  # noqa: E402
+import closeup  # noqa: E402
 import form  # noqa: E402
 import measure  # noqa: E402
 import viewmatch  # noqa: E402
@@ -37,6 +44,9 @@ import viewmatch  # noqa: E402
 def inner(args):
     started = time.time()
     blueprint = blueprints.load(args.blueprint)
+    unknown = set(args.part or []) - {p["id"] for p in blueprint["parts"]}
+    if unknown:
+        raise ValueError(f"unknown part {', '.join(sorted(unknown))} in --part")
     root = Path(args.blueprint).parent
     out = Path(args.out) if args.out else root / "inner"
     cameras_path = Path(args.cameras) if args.cameras else root / "cameras.json"
@@ -54,7 +64,7 @@ def inner(args):
                                 "long_edge": args.long_edge, "beauty": args.beauty}, args)
     matched = viewmatch.check(blueprint, args.blueprint, out, cameras=cameras)
     measured = measure.measure(blueprint, args.blueprint, out)
-    shaped = form.check(blueprint, args.blueprint, out, measured)
+    shaped = form.check(blueprint, args.blueprint, out, measured, only=args.part)
     stage = "blockout" if not matched["pass"] else "proportion" if not measured["pass"] else "form" if not shaped["pass"] else "outer"
     result = {
         "stage": stage, "pass": stage == "outer",
@@ -69,6 +79,19 @@ def inner(args):
         result["form"] = form.summary(shaped)
     if shaped["notes"]:
         result["notes"] = shaped["notes"]
+    if args.close != "none":
+        crops = {}
+        if args.close in ("render", "scene"):  # Blender renders each crop at full size; otherwise crops of the whole-view picture are enlarged
+            items = closeup.requests(blueprint, out, measured, args.part, args.part_edge)
+            if items:
+                done = blender_run.run({"command": "closeups", "blueprint": blueprint, "out": str(out / "close"), "cameras": cameras,
+                                        "items": items, "beauty": "scene" if args.close == "scene" else "preview"}, args)
+                crops = {(c["part"], c["view"]): c for c in done["closeups"]}
+        found = closeup.sheets(blueprint, args.blueprint, out, measured, args.part, args.part_edge, crops)
+        # One line per run: with every part in scope, name the folder; with --part, name the files.
+        result["closeups"] = ({name: [entry["file"] for entry in entries] for name, entries in found.items()} if args.part
+                              else (out / "close").as_posix())
+        result["seconds"] = round(time.time() - started, 1)
     if measured.get("advice"):
         result["advice"] = measured["advice"]
     if solved:
@@ -88,7 +111,12 @@ def main(argv=None):
     parser.add_argument("--blender", help="Blender executable")
     parser.add_argument("--out", help="Folder for the renders (default: inner/ beside the blueprint)")
     parser.add_argument("--cameras", help="Solved cameras (default: cameras.json beside the blueprint)")
-    parser.add_argument("--long-edge", type=int, default=768, help="Render size, longest edge (default: %(default)s)")
+    parser.add_argument("--long-edge", type=int, default=1536, help="Render size, longest edge (default: %(default)s)")
+    parser.add_argument("--part", action="append", metavar="ID", help="Work on this part: its close-ups and its outline only; repeatable")
+    parser.add_argument("--close", choices=["crop", "render", "scene", "none"], default="crop",
+                        help="Close-ups of each part: crop (cut from the whole-view picture and enlarged; the default), render (Blender renders "
+                             "each crop at full size, preview shading), scene (the same with the scene's own engine), none")
+    parser.add_argument("--part-edge", type=int, default=512, help="Pixels on a part's longer side in its close-up (default: %(default)s)")
     parser.add_argument("--beauty", choices=["preview", "scene", "none"], default="preview",
                         help="Picture beside the mask: preview (fast), scene (the scene's own engine, for an outer round), none")
     args = parser.parse_args(argv)

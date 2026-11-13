@@ -8,6 +8,7 @@ A folder for this part:
 
 - `pair.png`: one row for each view of the part. Each row has the TARGET crop, the CURRENT crop of the product, and the PREVIOUS crop when the part was reviewed before. The crops are cut from the part's own bounds, so the part fills each one.
 - `brief.json`:
+  - `pairs`: the picture sheets to read. Usually just `pair.png`. When the part is tall or has many views, one sheet would draw the crops too small, so each view also has its own sheet (`pair-side.png`, ...) and `pairs` lists those: read every one of them, and treat them as you would the rows of `pair.png`.
   - `form` and `colours`: what the blueprint says this part is, with colours sampled from the target.
   - `measured`: the part's height, width and centre in each view as ratios of subject height **H**, target and current. These were measured from mask renders and are within tolerance.
   - `outline`: present when the part's silhouette was compared with an outline traced on the target; it lists the views where the two agree within tolerance.

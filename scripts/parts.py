@@ -51,6 +51,8 @@ import viewmatch  # noqa: E402
 ASSEMBLY = "assembly"
 DRIFT = 0.06  # mean colour change (0-1) in a part's crop that counts as the part having changed
 PAD = 0.15
+SMALL = 256  # a part with fewer pixels than this on its longer side in a capture is too small to judge detail from
+CELL = 448  # when one sheet of every view would show the crops narrower than this, each view also gets a sheet of its own
 SCOPE = ("Layout is already measured and passes: judge form, then colour and material, then surface detail. "
          "The target is a design sheet; lighting and background are not part of the judgement.")
 OUTLINE_SCOPE = (" The part's silhouette has been compared with the outline traced on the target and is within tolerance in the views "
@@ -62,10 +64,8 @@ ASSEMBLY_FORM = ("The whole subject. Every part has passed on its own; judge onl
                  "whether materials and colours are consistent across parts, and whether the whole reads as the target does.")
 
 
-def padded(box, pad=PAD):
-    grow = pad * max(box[2], box[3])
-    x0, y0 = max(0.0, box[0] - grow), max(0.0, box[1] - grow)
-    return [x0, y0, min(1.0, box[0] + box[2] + grow) - x0, min(1.0, box[1] + box[3] + grow) - y0]
+def padded(box, image):
+    return masks.padded(box, PAD, image.size)
 
 
 def signature(capture, capture_box, mask, mask_box):
@@ -110,12 +110,19 @@ def into(box, source, destination):
     return [destination[0] + x * destination[2], destination[1] + y * destination[3], w * destination[2], h * destination[3]]
 
 
+def cell_width(rows, max_edge=1568):
+    """How wide each crop is drawn when these rows share one sheet."""
+    per = max(len(row) for _, row in rows)
+    shapes = [max(image.height / image.width for _, image in row) for _, row in rows]
+    return int(min((max_edge - per * compare.MARGIN) / per, (max_edge - len(rows) * compare.MARGIN) / sum(shapes), 640))
+
+
 def pair_sheet(rows, max_edge=1568):
     """One row per view: TARGET, CURRENT and (when there is one) PREVIOUS crop of the same part."""
     per = max(len(row) for _, row in rows)
     shapes = [max(image.height / image.width for _, image in row) for _, row in rows]
     margin = compare.MARGIN
-    width = int(min((max_edge - per * margin) / per, (max_edge - len(rows) * margin) / sum(shapes), 640))
+    width = cell_width(rows, max_edge)
     heights = [max(16, int(width * shape)) for shape in shapes]
     sheet = Image.new("RGB", (per * (width + margin), sum(heights) + len(rows) * margin), (24, 24, 24))
     draw = ImageDraw.Draw(sheet)
@@ -129,12 +136,7 @@ def pair_sheet(rows, max_edge=1568):
     return sheet
 
 
-def flatten(image):
-    """A capture or render on a neutral ground, so transparent pixels do not read as black holes."""
-    image = image.convert("RGBA")
-    ground = Image.new("RGB", image.size, (40, 40, 40))
-    ground.paste(image, mask=image.getchannel("A"))
-    return ground
+flatten = masks.flatten
 
 
 def parse_pairs(items, what):
@@ -198,10 +200,11 @@ def prepare(blueprint_path, round_number, renders, captures=None, capture_masks=
     if measured.get("advice"):
         layout["advice"] = measured["advice"]
     shaped = form.check(blueprint, blueprint_path, kept, measured) if layout["pass"] else {"parts": {}, "notes": []}
+    notes = list(shaped["notes"])  # things worth knowing that stop nothing
 
     # 2. Captures against the mask renders, and each part's box in each capture.
     target = Image.open(blueprints.target_path(blueprint, blueprint_path)).convert("RGB")
-    warnings, boxes, crops, signatures, view_hashes = [], {}, {}, {}, {}
+    warnings, boxes, crops, signatures, view_hashes, small = [], {}, {}, {}, {}, {}
     for view in blueprint["views"]:
         vid = view["id"]
         data, part_masks, subject = masks.read_ids(kept / f"{vid}.ids.json")
@@ -230,10 +233,20 @@ def prepare(blueprint_path, round_number, renders, captures=None, capture_masks=
             box = masks.fraction_box(part_masks[part["id"]]) if part["id"] in part_masks else None
             if vid in part["boxes"] and box and status in ("pass", "fail"):
                 boxes[(part["id"], vid)] = (part["boxes"][vid], into(box, render_subject, capture_subject))
+                shown = max(boxes[(part["id"], vid)][1][2] * capture.width, boxes[(part["id"], vid)][1][3] * capture.height)
+                if shown < SMALL:
+                    small.setdefault(vid, []).append((shown, part["id"]))
                 signatures[(part["id"], vid)] = signature(capture, boxes[(part["id"], vid)][1], part_masks[part["id"]], box)
         for (name, v), (target_box, capture_box) in boxes.items():
             if v == vid:
-                crops[(name, vid)] = (masks.crop_box(target, padded(target_box)), masks.crop_box(capture, padded(capture_box)))
+                crops[(name, vid)] = (masks.crop_box(target, padded(target_box, target)), masks.crop_box(capture, padded(capture_box, capture)))
+        if vid in small:
+            shown, name = min(small[vid])
+            need = round(max(capture.size) * 2 * SMALL / shown / 64) * 64
+            notes.append(f"view {vid}: {', '.join(n for _, n in sorted(small[vid]))} cover under {SMALL} px in the capture "
+                            f"({name}: {round(shown)} px); a critic cannot read detail at that size. "
+                            f"Capture this view about {need} px on its long edge"
+                            + (" (inner.py --long-edge)" if view_data[vid]["capture_source"] == "blender" else ""))
 
     # 3. States from the earlier rounds, and what changed since a part passed.
     states, _ = verdict.replay_parts(rounds, pass_score, upto=round_number - 1, strict=False) if rounds.exists() else ({}, [])
@@ -289,10 +302,15 @@ def prepare(blueprint_path, round_number, renders, captures=None, capture_masks=
             old_box = previous["parts"].get(name, {}).get("boxes", {}).get(vid)
             if old_box and entry["send"] == "critic":
                 with Image.open(previous_base / "captures" / f"{vid}.png") as old:
-                    row.append(("PREVIOUS", masks.crop_box(old.convert("RGB"), padded(old_box))))
+                    row.append(("PREVIOUS", masks.crop_box(old.convert("RGB"), padded(old_box, old))))
                 has_previous = True
             rows.append((vid, row))
         pair_sheet(rows).save(folder / "pair.png")
+        pairs = ["pair.png"]
+        if len(rows) > 1 and cell_width(rows) < CELL:  # too small to judge from: give every view a sheet of its own as well
+            pairs = [f"pair-{vid}.png" for vid, _ in rows]
+            for row, file in zip(rows, pairs):
+                pair_sheet([row]).save(folder / file)
         part = next((blueprints.resolve(blueprint, p) for p in blueprint["parts"] if p["id"] == name), None)
         measured_values, settled = {}, []
         for vid in [v for v, _ in rows] if part else []:
@@ -306,7 +324,7 @@ def prepare(blueprint_path, round_number, renders, captures=None, capture_masks=
         if act_on and entry["send"] == "critic" and (rounds / act_on).exists():
             old_verdict = verdict.load(rounds / act_on)
             directives = [{"id": item["id"], "change": item["change"]} for key in ("blockers", "next") for item in old_verdict.get(key, [])]
-        brief = {"part": name, "round": round_number, "subject": blueprint["subject"], "pair": "pair.png", "views": [v for v, _ in rows],
+        brief = {"part": name, "round": round_number, "subject": blueprint["subject"], "pair": "pair.png", "pairs": pairs, "views": [v for v, _ in rows],
                  "form": part["form"] if part else ASSEMBLY_FORM, "colours": part["colours"] if part else [],
                  "measured": measured_values, "settled": settled, "has_previous": has_previous, "previous_directives": directives, "scope": SCOPE}
         passed = {v: {"overlap": r["overlap"], "needs": r["needs"]} for v, r in entry.get("outline", {}).get("views", {}).items() if r["status"] == "pass"}
@@ -326,7 +344,7 @@ def prepare(blueprint_path, round_number, renders, captures=None, capture_masks=
     (base / "review.json").write_text(json.dumps(review, indent=1) + "\n", encoding="utf-8")
     held = [name for name, entry in review["parts"].items() if entry.get("held") == "form"]
     return {"round": round_number, "layout": layout["pass"], "failing": layout["failing"], "restart": layout["restart"], "send": send,
-            "held": held, "form_failing": [line for name in held for line in review["parts"][name]["outline"]["lines"]], "notes": shaped["notes"],
+            "held": held, "form_failing": [line for name in held for line in review["parts"][name]["outline"]["lines"]], "notes": notes,
             "locked": [n for n, e in review["parts"].items() if e["state_before"] == "locked" and not e["changed"] and n not in unlock],
             "regressions": review["regressions"], "warnings": warnings}
 
