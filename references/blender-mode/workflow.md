@@ -145,6 +145,14 @@ Do not give it the other parts, the whole subject, a previous score or your opin
 python SCRIPTS/verdict.py .dream-loop/rounds
 ```
 
+If the output has `reversals`, deal with them before anything else. Each names a directive from this round that asks for the opposite of one you already acted on for the same place (`against`, `in`), or of the directive the other critic gave for a `same_as` part's counterpart, and says why it was flagged: two sizes with their current values, the critic's own `reverses`, or only the wording (a guess: read both). Do not follow the newer one because it is newer; that is how a model oscillates. Look at the target crop, decide which is right, and record it so no later critic reopens it:
+
+```sh
+python SCRIPTS/ledger.py add .dream-loop/ledger.json --part leg_l --fact "shin is widest 0.33 of its length below the knee" --key leg_l.shin.widest_at --value 0.33 --source "round 4 reversal"
+```
+
+If you cannot tell from the target, it is a `target_unclear` case: ask the user. A reversal is a flag, not a rule break, and does not change the decision.
+
 Status 2 means a verdict breaks the rules (a size given as a relative change, a settled fact reversed without evidence, a missing verdict); send the listed problem back to that part's critic once. Otherwise act on `decision`:
 
 - **layout** / **restart**: a gate failed at capture time. Go back to the inner loop, or apply the restart rule.
@@ -164,7 +172,8 @@ A part is `open` until a critic passes it, `passing` until a second confirms it,
 
 - **Absolute values only.** The blueprint, the measures and every critic directive state a size as a target with the current value ("0.31 H, currently 0.45 H"). Never apply or pass on "30% shorter": the next reader estimates the current size differently and the model oscillates.
 - **The blueprint settles proportions.** A critic that disagrees with a measured value must cite what on the target shows it (`verdict.py` lists these under `disputes`). Check the blueprint's box for that part against the target. If the box is wrong, fix the blueprint and rerun `blueprint.py validate --write`; if it is right, record the outcome in the ledger and carry on.
-- **Record what is agreed.** When a size inside a part is settled, the user accepts a difference, or a dispute is resolved:
+- **Colours are sampled, not eyeballed.** Each brief carries the target's colour at the blueprint's point and the capture's colour at the same place, with the difference. Set base colours from the blueprint's `hex` values, and treat a critic's colour directive that quotes some other target value as unusable.
+- **Record what is agreed.** When a size inside a part is settled, the user accepts a difference, a reversal is decided, or a dispute is resolved:
   ```sh
   python SCRIPTS/ledger.py add .dream-loop/ledger.json --part head --fact "eye diameter is 0.04 H" --key head.eye.diameter --value 0.04 --source "round 3"
   ```
