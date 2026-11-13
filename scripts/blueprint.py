@@ -8,6 +8,7 @@ colours and form notes. Every later check and critic works from this sheet.
   python blueprint.py validate .dream-loop/blueprint.json [--write]
   python blueprint.py overlay  .dream-loop/blueprint.json --out .dream-loop/blueprint.png
   python blueprint.py outline  .dream-loop/blueprint.json [--part head ...] [--view side] [--write] [--out outlines.png]
+  python blueprint.py backdrop .dream-loop/blueprint.json
   python blueprint.py blockout .dream-loop/blueprint.json --out .dream-loop/blockout.json [--no-refs]
 
 validate  lists everything wrong with the sheet (exit status 2) or prints one JSON line.
@@ -22,6 +23,9 @@ blockout  turns the measures into one primitive per part (centre and size in H) 
           start, or restart, the model from. An extent the target shows from no direction is
           taken from a generated view the user approved for that purpose (refgen.py), when
           there is one; --no-refs leaves it assumed.
+
+backdrop  suggests a flat colour to capture the product against outside Blender: the saturated
+          colour furthest from every colour the subject has, so the capture can be keyed.
 
 All boxes are x, y, w, h as fractions of the target image, the same as compare.py.
 validate needs no dependencies when target_size is already recorded; the rest need Pillow.
@@ -449,6 +453,31 @@ def propose_outlines(blueprint, path, part_ids=None, view_ids=None, tolerance=11
     return found, notes
 
 
+BACKDROPS = {"magenta": "#ff00ff", "green": "#00ff00", "blue": "#0000ff", "cyan": "#00ffff", "yellow": "#ffff00", "orange": "#ff8000",
+             "red": "#ff0000", "violet": "#8000ff"}
+
+
+def backdrop(blueprint, path):
+    """The saturated colour furthest from the subject's own colours: every sampled part colour and the target's pixels inside each subject box."""
+    from PIL import Image
+    import masks  # here, not at the top: masks needs Pillow, validate does not
+
+    def rgb(value):
+        return tuple(int(value[i:i + 2], 16) for i in (1, 3, 5))
+
+    image = Image.open(target_path(blueprint, path)).convert("RGB")
+    named = [(f"{part['id']} {colour['name']}", rgb(colour["hex"])) for part in blueprint["parts"] for colour in part.get("colours") or [] if colour.get("hex")]
+    seen = [pixel for view in blueprint["views"] for pixel in pixels(masks.crop_box(image, view["subject_box"]).resize((48, 48)))]
+    ranked = []
+    for name, value in BACKDROPS.items():
+        nearest = min(named, key=lambda entry: math.dist(entry[1], rgb(value)), default=None)
+        distance = min([math.dist(pixel, rgb(value)) for pixel in seen] + ([math.dist(nearest[1], rgb(value))] if nearest else []))
+        ranked.append({"name": name, "hex": value, "distance": round(distance), "nearest": nearest[0] if nearest else None})
+    ranked.sort(key=lambda entry: -entry["distance"])
+    return {"backdrop": ranked[0]["hex"], "name": ranked[0]["name"], "distance": ranked[0]["distance"], "nearest": ranked[0]["nearest"],
+            "others": ranked[1:4]}
+
+
 def overlay(blueprint, path, out, max_edge=1568, proposed=None):
     from PIL import Image, ImageDraw
     image = Image.open(target_path(blueprint, path)).convert("RGB")
@@ -572,11 +601,13 @@ def blockout(blueprint, hints=None):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("validate", "overlay", "blockout", "outline"):
+    for name in ("validate", "overlay", "blockout", "outline", "backdrop"):
         command = sub.add_parser(name)
         command.add_argument("blueprint", help="Path to blueprint.json")
         if name == "validate":
             command.add_argument("--write", action="store_true", help="Record target_size, sampled colours and measures in the file")
+        elif name == "backdrop":
+            pass
         elif name == "outline":
             command.add_argument("--part", action="append", help="Part to trace; repeatable (default: every part)")
             command.add_argument("--view", action="append", help="View to trace it in; repeatable (default: every view with its box)")
@@ -603,6 +634,8 @@ def main(argv=None):
         if args.command == "overlay":
             overlay(blueprint, args.blueprint, args.out)
             print(json.dumps({"overlay": Path(args.out).as_posix()}))
+        elif args.command == "backdrop":
+            print(json.dumps(backdrop(blueprint, args.blueprint), separators=(",", ":")))
         elif args.command == "outline":
             for name, known in ((args.part, [p["id"] for p in blueprint["parts"]]), (args.view, [v["id"] for v in blueprint["views"]])):
                 if name and set(name) - set(known):

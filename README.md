@@ -41,9 +41,10 @@ For a character, creature or prop that has to match an approved design sheet, as
 1. The target is turned into a **blueprint** once: the parts, each part's size as a ratio of the subject's height, joints, sampled colours, form notes, and every view with a camera estimate.
 2. A **view-match gate** solves one camera per view and freezes it. Nothing is judged until the model's silhouette overlays the target's.
 3. **Layout is measured**, not judged: a flat ID-colour mask render gives every part's projected size and position, compared with the blueprint in numbers ("leg height: target 0.42 H, currently 0.55 H").
-4. A fast **inner loop** in Blender (render, view match, measure; seconds, no critic) runs after every change. The **outer loop**, a capture of the real product plus independent critics, is entered only when the inner checks pass.
-5. Critics review **one part at a time** from crops cut automatically from that part's bounds. Parts that pass are confirmed by a second critic and locked; a locked part that changes is a regression.
-6. Work goes in a fixed order: blockout, proportion lock, secondary forms, colour and material, surface detail. A model that fails layout badly is rebuilt from a blockout, not repaired.
+4. **Shape is measured** too, for any part given an outline traced on the target: the part's silhouette is compared with it and the difference stated in numbers ("target extends 0.02 H beyond the model at the top left"), before any critic is asked.
+5. A fast **inner loop** in Blender (render, view match, measure, compare outlines; no critic) runs after every change and writes a close-up of each part, target beside model at one scale. The **outer loop**, a capture of the real product plus independent critics, is entered only when the inner checks pass.
+6. Critics review **one part at a time** from crops cut automatically from that part's bounds, with the target's and the capture's colours sampled for them. A round can be about a single part; mirrored parts that are the same geometry share one critic; a directive that reverses an earlier one is flagged. Parts that pass are confirmed by a second critic and locked; a locked part that changes is a regression.
+7. Work goes in a fixed order: blockout, proportion lock, secondary forms, colour and material, surface detail. A model that fails layout badly is rebuilt from a blockout, not repaired.
 
 It needs Blender, headless or an open session with the blender-mcp add-on. See [references/blender-mode/workflow.md](references/blender-mode/workflow.md).
 

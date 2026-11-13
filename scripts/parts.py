@@ -66,6 +66,7 @@ import viewmatch  # noqa: E402
 ASSEMBLY = "assembly"
 DRIFT = 0.06  # mean colour change (0-1) in a part's crop that counts as the part having changed
 PAD = 0.15
+LOST = 0.03  # share of the subject (or of a part) that a capture's backdrop may swallow before it is worth saying
 SMALL = 256  # a part with fewer pixels than this on its longer side in a capture is too small to judge detail from
 CELL = 448  # when one sheet of every view would show the crops narrower than this, each view also gets a sheet of its own
 SCOPE = ("Layout is already measured and passes: judge form, then colour and material, then surface detail. "
@@ -107,23 +108,48 @@ def drift(a, b):
     return sum(abs(x - y) for x, y in zip(a, b)) / (255 * len(a)) if a and b and len(a) == len(b) else 0.0
 
 
-def capture_alignment(capture, mask, render_subject, need):
+def backdrop_advice(info):
+    """What to say when a capture's backdrop is too close to the subject's own colours for the key to separate them."""
+    where = f", most of it on {', '.join(info['lost_on'])}" if info.get("lost_on") else ""
+    return (f"{info['lost']:.0%} of the subject in the capture is within the key's tolerance of the backdrop {info['backdrop']}{where}, so the key "
+            "takes it for background. Capture against a flat, unlit, saturated colour that none of the subject's colours are near "
+            "(blueprint.py backdrop suggests one), or pass --capture-mask")
+
+
+def capture_alignment(capture, mask, render_subject, need, part_masks=None):
     """Where the subject sits in the capture, and whether the capture agrees with the mask render.
 
     Returns (subject box in the capture or None, info). With no usable mask the capture is assumed
     to be framed exactly as the render, which holds when it was taken with the recorded camera.
     """
+    backdrop = None
     if mask is None:
         keyed, flat = masks.border_key(capture)
         filled = masks.area(keyed) / (keyed.width * keyed.height)
         if flat < 0.85 or not 0.01 <= filled <= 0.9:
             return None, {"method": "assumed", "note": "the capture's background cannot be keyed; it is assumed to be framed like the mask render"}
-        mask = keyed
+        mask, backdrop = keyed, masks.median_colour(masks.border_strips(capture.convert("RGB")))
     mask = mask.convert("L").point(lambda v: 255 if v > 127 else 0)
     render = render_subject.resize(mask.size, Image.NEAREST)
     union = masks.area(ImageChops.lighter(mask, render))
     iou = masks.area(ImageChops.darker(mask, render)) / union if union else 0.0
     info = {"method": "mask", "capture_iou": round(iou, 3), "pass": iou >= need}
+    if backdrop:
+        # How much of the subject the key could not tell from the backdrop, and on which parts. Backdrop colour where the render
+        # has the subject means that only if the capture is framed like the render: a subject that is shifted or the wrong size
+        # leaves real backdrop there, and then shows outside the render's silhouette as well, or with different bounds.
+        alike = ImageChops.darker(masks.near(capture.convert("RGB"), backdrop, masks.KEY_TOLERANCE), render)
+        lost = masks.area(alike) / max(1, masks.area(render))
+        outside = masks.area(ImageChops.darker(mask, ImageChops.invert(render))) / max(1, masks.area(render))
+        a, b = masks.fraction_box(mask), masks.fraction_box(render)
+        info["backdrop"] = "#%02x%02x%02x" % tuple(backdrop)
+        if outside <= max(0.02, lost / 3):
+            info.update(lost=round(lost, 3), framed=bool(a and b and max(abs(a[0] - b[0]), abs(a[1] - b[1]), abs(a[0] + a[2] - b[0] - b[2]),
+                                                                         abs(a[1] + a[3] - b[1] - b[3])) <= 0.03))
+        if info.get("lost", 0) >= LOST and part_masks:
+            shares = {name: masks.area(ImageChops.darker(alike, part.resize(mask.size, Image.NEAREST))) / max(1, masks.area(part))
+                      for name, part in part_masks.items() if masks.area(part)}
+            info["lost_on"] = [name for name, share in sorted(shares.items(), key=lambda kv: -kv[1]) if share >= LOST][:4]
     return masks.fraction_box(mask), info
 
 
@@ -284,14 +310,18 @@ def prepare(blueprint_path, round_number, renders, captures=None, capture_masks=
         capture_subject = render_subject
         if view_data[vid]["capture_source"] == "product" and render_subject:
             mask = Image.open(capture_masks[vid]) if vid in capture_masks else None
-            found, info = capture_alignment(capture, mask, subject, tolerance["capture_iou"])
+            found, info = capture_alignment(capture, mask, subject, tolerance["capture_iou"], part_masks)
             capture_subject = found or render_subject
             if info["method"] == "assumed":
                 warnings.append(f"view {vid}: {info['note']}")
             elif not info["pass"]:
                 layout["pass"] = False
+                camera = "take the capture with the camera recorded in cameras.json"
                 layout["failing"].append(f"view {vid}: the capture overlaps the mask render by {info['capture_iou']}, below {tolerance['capture_iou']}; "
-                                         "take the capture with the camera recorded in cameras.json")
+                                         + (camera if info.get("lost", 0) < LOST else backdrop_advice(info) if info["framed"] else
+                                            f"{camera}. If the camera is right: {backdrop_advice(info)}"))
+            elif info.get("lost", 0) >= LOST and info["framed"]:
+                notes.append(f"view {vid}: the capture passes its check ({info['capture_iou']}), but {backdrop_advice(info)}")
         view_data[vid].update(alignment=info, camera={k: data["camera"].get(k) for k in ("yaw", "pitch", "lens")})
         if not render_subject:
             continue
