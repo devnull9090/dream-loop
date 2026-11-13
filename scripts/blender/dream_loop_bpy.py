@@ -160,7 +160,9 @@ def twin(objects, source_objects, source, depsgraph, height):
     best = None
     for how, sign in (("mirror", -1.0), ("copy", 1.0)):
         moved = b * numpy.array([sign, 1.0, 1.0])
-        off = max(furthest(moved, a), furthest(a, moved))
+        off = float(numpy.abs(moved - a).max())  # vertex for vertex, when the two were built in the same order
+        if off > TWIN * max(size, 1e-9):
+            off = max(furthest(moved, a), furthest(a, moved))
         if off <= TWIN * max(size, 1e-9):
             return {"of": source, "how": how}
         best = off if best is None else min(best, off)

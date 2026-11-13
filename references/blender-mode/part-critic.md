@@ -73,7 +73,7 @@ Do not take colour values from the crops yourself. A painted target is lit: thre
 For each entry in `colours`, `hex` is the target and `capture` is the product at the same point, both sampled by the script. `difference` gives the product's lightness and chroma against the target's in L\*a\*b\* units, the hue apart in degrees, and delta E. Judge the colour of that surface from this pair:
 
 - A delta E under about 6 with no hue difference is the same colour for this purpose; do not fail the gate on it.
-- When you ask for a colour change, quote the pair: "shell is #c9ad8f in the capture against the target's #e4cbb1: 9 L\* darker; raise the base colour's value". Never quote a target colour that is not a `hex` in `colours`.
+- When you ask for a colour change, quote the pair: "plate is #7c8a90 in the capture against the target's #9aa9ae: 12 L\* darker; raise the base colour's value". Never quote a target colour that is not a `hex` in `colours`.
 - The capture is lit too. If the pair differs only in lightness and the crop shows the surface in shadow, say so under `unverifiable` instead of asking for a lighter material.
 - A surface with no entry in `colours`, or an entry with no `capture`, you judge by eye as a relation ("the rim reads greener than the plate; in the target they match"), not as a hex value.
 

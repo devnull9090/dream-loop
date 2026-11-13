@@ -211,6 +211,27 @@ class BlenderTest(unittest.TestCase):
         self.assertEqual(result["views"]["front"]["missing"], [], result)
         self.assertTrue((self.dir / "exec" / "front.ids.png").exists())
 
+    def test_closeups_run_the_way_the_addon_runs_them_and_leave_the_scene_as_it_was(self):
+        request = {"command": "closeups", "blueprint": self.blueprint, "out": str(self.dir / "close"), "beauty": "preview",
+                   "items": [{"view": "front", "part": "head", "box": [0.35, 0.05, 0.3, 0.3], "long_edge": 640}]}
+        (self.dir / "sent_close.py").write_text(blender_run.socket_code(request), encoding="utf-8")
+        watched = ("bpy.context.scene.render.use_border, bpy.context.scene.render.use_crop_to_border, bpy.context.scene.render.resolution_x, "
+                   "bpy.context.scene.render.engine, bpy.context.scene.render.filepath, bpy.context.scene.render.film_transparent, "
+                   "bpy.context.scene.camera.name if bpy.context.scene.camera else None")
+        (self.dir / "as_addon_close.py").write_text(
+            "import bpy, io, sys\nfrom contextlib import redirect_stdout\n"
+            f"before = repr(({watched}))\n"
+            "code = open(sys.argv[-1], encoding='utf-8').read()\nbuffer = io.StringIO()\n"
+            "with redirect_stdout(buffer):\n    exec(code, {'bpy': bpy})\nprint(buffer.getvalue())\n"
+            f"print('SCENE_SAME', before == repr(({watched})))\n", encoding="utf-8")
+        done = subprocess.run([BLENDER, "--background", str(self.blend), "--python", str(self.dir / "as_addon_close.py"), "--",
+                               str(self.dir / "sent_close.py")], capture_output=True, text=True, errors="replace", timeout=300)
+        result = blender_run.parse_result(done.stdout)
+        self.assertEqual([(c["view"], c["part"]) for c in result["closeups"]], [("front", "head")], result)
+        self.assertIn("SCENE_SAME True", done.stdout)
+        with Image.open(self.dir / "close" / "head.front.render.png") as crop:
+            self.assertEqual(crop.size, (192, 192))  # three tenths of a 640 px frame: only the box was rendered
+
     def test_blender_error_is_reported(self):
         data = complete()
         data["views"][0]["scene"] = {"collection": "Pose_Missing"}

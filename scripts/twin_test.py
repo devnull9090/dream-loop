@@ -138,6 +138,20 @@ class TwinTest(unittest.TestCase):
         self.assertEqual(result["locked"], ["leg_l"])
         self.assertTrue((self.rounds / "round-2" / "parts" / "leg_r" / "brief.json").exists())
 
+    def test_a_twin_of_a_part_that_fails_its_outline_is_held_with_it(self):
+        # Only the left leg has an outline, a box where the model is an egg: the right leg is the same wrong shape.
+        data = json.loads(self.blueprint.read_text(encoding="utf-8"))
+        x, y, w, h = next(p for p in data["parts"] if p["id"] == "leg_l")["boxes"]["front"]
+        next(p for p in data["parts"] if p["id"] == "leg_l")["outlines"] = {"front": [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]}
+        self.blueprint.write_text(json.dumps(data), encoding="utf-8")
+        self.render()
+        status, result, _ = self.prepare(1)
+        self.assertEqual((status, [s["part"] for s in result["send"]], result["held"]), (0, ["head", "body"], ["leg_l", "leg_r"]))
+        self.assertIn("leg_r is the same geometry as leg_l, which fails its outline", result["form_failing"])
+        self.save(1, **self.others())
+        decision = verdict.decide_parts(self.rounds)
+        self.assertEqual((decision["decision"], sorted(decision["held"])), ("continue", ["leg_l", "leg_r"]))
+
 
 if __name__ == "__main__":
     unittest.main()

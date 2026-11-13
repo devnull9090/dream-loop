@@ -105,6 +105,33 @@ class ScopeTest(Rounds):
         self.assertEqual(status, 2)
         self.assertIn("unknown part tail in --only; choose from head, body, assembly", err)
 
+    def test_rounds_written_before_these_fields_existed_still_replay(self):
+        # A review.json as an earlier version wrote it: no state, scope, outline, held, shared or twin entries.
+        self.render()
+        self.prepare(1)
+        path = self.rounds / "round-1" / "review.json"
+        review = json.loads(path.read_text(encoding="utf-8"))
+        review.pop("scope", None)
+        for entry in review["parts"].values():
+            for key in ("state", "outline", "held", "shared", "shares", "twin", "same_as"):
+                entry.pop(key, None)
+        path.write_text(json.dumps(review), encoding="utf-8")
+        for folder in (self.rounds / "round-1" / "parts").iterdir():
+            brief = json.loads((folder / "brief.json").read_text(encoding="utf-8"))
+            for key in ("pairs", "outline", "also", "twins", "colour_rule"):
+                brief.pop(key, None)
+            (folder / "brief.json").write_text(json.dumps(brief), encoding="utf-8")
+        self.verdicts(1, head=pv("head", 8.5), head_confirm=pv("head", 8.5), body=pv("body", 5.5))
+        decision = self.decide()
+        self.assertEqual((decision["decision"], decision["parts"]["head"]["state"]), ("continue", "locked"))
+        self.assertNotIn("held", decision)
+        self.render(hashes={"body": "body-v2"})
+        status, result, err = self.prepare(2, "--only", "body")
+        self.assertEqual((status, err, [s["part"] for s in result["send"]], result["locked"]), (0, "", ["body"], ["head"]))
+        self.assertTrue(self.brief(2, "body")["has_previous"])
+        self.verdicts(2, body=pv("body", 6.0, previous=5.5))
+        self.assertEqual(self.decide()["decision"], "continue")
+
 
 if __name__ == "__main__":
     unittest.main()

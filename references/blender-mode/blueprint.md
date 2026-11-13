@@ -44,7 +44,13 @@ python /path/to/dream-loop/scripts/blueprint.py outline .dream-loop/blueprint.js
 python /path/to/dream-loop/scripts/blueprint.py outline .dream-loop/blueprint.json --part head --write
 ```
 
-The proposal keeps the pixels inside the part's box that are nearer the part's sampled colours than the background or an overlapping neighbour's colours, takes the largest connected patch and traces its edge. Open `outlines.png`. If the proposal leaks into a neighbour or misses a shaded area, add a colour point on the missed area (and run `validate --write`), lower or raise `--tolerance`, or move the points by hand in the file after `--write`. A second `--write` leaves outlines that are already there alone unless you add `--replace`. `overlay` draws the stored outlines with the boxes, so check them there as well.
+The proposal keeps the pixels inside the part's box that are nearer the part's sampled colours than the background or an overlapping neighbour's colours, takes the largest connected patch and traces its edge. Open `outlines.png`. A second `--write` leaves outlines that are already there alone unless you add `--replace`. `overlay` draws the stored outlines with the boxes, so check them there as well.
+
+Expect to correct it. The proposal is right for a part of one flat colour standing clear of its neighbours. On a painted target, a part made of several materials (a cream head with a dark visor) is traced only where it matches a sampled colour, and parts that share a material and overlap (an arm across a torso of the same colour) run into each other. Tried on a real painted turnaround of eleven parts, most proposals needed moving. What helps, in order:
+
+- `--key subject` keeps everything in the box that is not background and not close to an overlapping part's colours. Better for a part of several materials; worse where an unsampled neighbour shares the box.
+- More colour points on the part (one per material, one on a shaded area), then `validate --write` and trace again.
+- Correcting by hand. `--close .dream-loop/outlines` writes one enlarged picture per part and view (`head.side.outline.png`) with the points numbered, the part's box, and a grid labelled in target fractions: read the right position for a point off the grid and edit that point in `blueprint.json`. `outline --no-propose --close FOLDER` redraws what is stored, to check the corrections. Twenty to thirty points are enough; follow the silhouette, not the interior.
 
 Which parts to outline: the ones whose silhouette carries the design (a head, a shell, a clamp, a foot), in the views that show them clearly. Leave a view out when the part is mostly covered there. A part with no outline is not checked for shape and goes to the critics as before.
 

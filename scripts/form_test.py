@@ -247,6 +247,29 @@ class OutlineBlueprintTest(unittest.TestCase):
         self.assertEqual(self.run_main("outline", str(self.path), "--part", "tail")[0], 2)
         self.assertEqual(self.run_main("overlay", str(self.path), "--out", str(self.root / "blueprint.png"))[0], 0)
 
+    def test_gridded_closeups_for_correcting_by_hand_and_the_subject_key(self):
+        self.save(complete())
+        folder = self.root / "outlines"
+        status, result, err = self.run_main("outline", str(self.path), "--part", "head", "--view", "side", "--key", "subject", "--close", str(folder))
+        self.assertEqual((status, err), (0, ""))
+        self.assertEqual(result["closeups"], [(folder / "head.side.outline.png").as_posix()])
+        with Image.open(folder / "head.side.outline.png") as image:
+            self.assertGreaterEqual(max(image.size), 1024)  # large enough to read a coordinate off the grid
+        # On a flat sheet both keys find the same ellipse: neither the body below it nor the ground.
+        drawn, truth = Image.new("L", SIZE), Image.new("L", SIZE)
+        ImageDraw.Draw(drawn).polygon([(x * SIZE[0], y * SIZE[1]) for x, y in result["outlines"]["head"]["side"]], fill=255)
+        ImageDraw.Draw(truth).ellipse(HEAD, fill=255)
+        self.assertGreater(masks.area(Image.composite(truth, Image.new("L", SIZE), drawn)) / masks.area(Image.composite(drawn, truth, drawn)), 0.93)
+        self.assertNotIn("outlines", json.loads(self.path.read_text(encoding="utf-8"))["parts"][0])
+
+        # --no-propose redraws what is stored and traces nothing, even with --write.
+        data = complete()
+        data["parts"][0]["outlines"] = {"side": fractions(rectangle(HEAD))}
+        self.save(data)
+        status, result, _ = self.run_main("outline", str(self.path), "--no-propose", "--write", "--close", str(folder))
+        self.assertEqual((status, list(result["outlines"]), len(result["outlines"]["head"]["side"])), (0, ["head"], 4))
+        self.assertEqual(len(blueprint.load(self.path)["parts"][0]["outlines"]["side"]), 4)
+
 
 class FormGateTest(unittest.TestCase):
     """The outline gate inside a review round: a part that fails it is not sent to a critic."""

@@ -404,6 +404,12 @@ def prepare(blueprint_path, round_number, renders, captures=None, capture_masks=
     if not layout["pass"] or review["regressions"]:
         for entry in review["parts"].values():
             entry["send"] = None
+    for name, (source, _) in twins.items():  # one shape: if either fails its outline, a critic has nothing to add about the other
+        for failed, other in ((source, name), (name, source)):
+            if review["parts"][failed].get("held") == "form" and review["parts"][other]["send"] and (not scope or other in scope):
+                lines = [f"{other} is the same geometry as {failed}, which fails its outline"]
+                review["parts"][other].update(send=None, held="form")
+                review["parts"][other]["outline"] = {**review["parts"][other].get("outline", {"status": "held", "views": {}}), "lines": lines}
     for name, (source, how) in twins.items():  # owed the same kind of review: one critic sees both
         if review["parts"][name]["send"] and review["parts"][name]["send"] == review["parts"][source]["send"]:
             review["parts"][name]["shared"] = source
