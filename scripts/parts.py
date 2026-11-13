@@ -25,6 +25,11 @@ What it does, in order:
     colours, measured values, settled facts, previous directives).
  5. Writes round-N/review.json, which verdict.py reads.
 
+A part the blueprint marks same_as another (a right leg, same_as the left) is sent to the same
+critic as that part when the model's two are the same geometry, mirrored or copied, as measured
+in Blender: one folder, one verdict, applied to both. When they differ in the model, or the
+render carries no such measurement, each gets its own critic.
+
 --only PART (repeatable) makes it a round about those parts alone: only they are sent, and
 verdict.py decides on them and carries every other part's state forward as it was. Everything
 else still runs for the whole subject: the gates, the capture check, and the watch on locked
@@ -61,6 +66,9 @@ SMALL = 256  # a part with fewer pixels than this on its longer side in a captur
 CELL = 448  # when one sheet of every view would show the crops narrower than this, each view also gets a sheet of its own
 SCOPE = ("Layout is already measured and passes: judge form, then colour and material, then surface detail. "
          "The target is a design sheet; lighting and background are not part of the judgement.")
+TWIN_RULE = ("{others} {verb} the same geometry as {part} in the model ({how}), measured, so this one verdict covers {all}. "
+             "The rows labelled with another part's name show that part in its own views: read them as further views of the same design. "
+             "Every directive you give is applied to all of them, so give each once, and do not ask for one side to differ from the other.")
 OUTLINE_SCOPE = (" The part's silhouette has been compared with the outline traced on the target and is within tolerance in the views "
                  "listed under outline: judge the forms inside it, and do not ask for the silhouette to change in those views.")
 GENERATED_RULE = ("generated.png was made by an image model from the approved target and accepted by the user as a reading aid. It is not the target. "
@@ -214,7 +222,7 @@ def prepare(blueprint_path, round_number, renders, captures=None, capture_masks=
 
     # 2. Captures against the mask renders, and each part's box in each capture.
     target = Image.open(blueprints.target_path(blueprint, blueprint_path)).convert("RGB")
-    warnings, boxes, crops, signatures, view_hashes, small = [], {}, {}, {}, {}, {}
+    warnings, boxes, crops, signatures, view_hashes, small, twin_info = [], {}, {}, {}, {}, {}, {}
     for view in blueprint["views"]:
         vid = view["id"]
         data, part_masks, subject = masks.read_ids(kept / f"{vid}.ids.json")
@@ -239,6 +247,8 @@ def prepare(blueprint_path, round_number, renders, captures=None, capture_masks=
         signatures[(ASSEMBLY, vid)] = signature(capture, capture_subject, subject, render_subject)
         for part in blueprint["parts"]:
             view_hashes.setdefault(part["id"], []).append(data["parts"].get(part["id"], {}).get("hash"))
+            if data["parts"].get(part["id"], {}).get("twin"):
+                twin_info.setdefault(part["id"], []).append(data["parts"][part["id"]]["twin"])
             status = measured["views"].get(vid, {}).get("parts", {}).get(part["id"], {}).get("status")
             box = masks.fraction_box(part_masks[part["id"]]) if part["id"] in part_masks else None
             if vid in part["boxes"] and box and status in ("pass", "fail"):
@@ -265,6 +275,19 @@ def prepare(blueprint_path, round_number, renders, captures=None, capture_masks=
     hashes[ASSEMBLY] = hashlib.sha1(json.dumps(sorted(hashes.items())).encode()).hexdigest()[:16]
     earlier = [(rounds / f"round-{n}", json.loads((rounds / f"round-{n}" / "review.json").read_text(encoding="utf-8")))
                for n in range(round_number - 1, 0, -1) if (rounds / f"round-{n}" / "review.json").exists()]
+    # Twins: a same_as part that the model, in every view that measured it, shows to be its source's geometry mirrored or copied.
+    twins = {}
+    for part in blueprint["parts"]:
+        found = twin_info.get(part["id"], [])
+        if part.get("same_as") and found and all(t.get("of") == part["same_as"] and t.get("how") for t in found):
+            twins[part["id"]] = (part["same_as"], found[0]["how"])
+        elif part.get("same_as") and found:
+            why = next(t.get("why", "they differ") for t in found if not t.get("how"))
+            notes.append(f"{part['id']} is same_as {part['same_as']} in the blueprint but not in the model ({why}); each gets its own critic")
+    for name, (source, _) in twins.items():  # a change to one is a change to the other, so a round about one is about both
+        if scope and (name in scope) != (source in scope):
+            scope.append(source if name in scope else name)
+            notes.append(f"{scope[-1]} was added to this round: it is the same geometry as {name if scope[-1] == source else source}")
     review = {"round": round_number, "views": view_data, "layout": layout, "parts": {}, "regressions": [], "unlocked": unlock, "warnings": warnings}
     if scope:
         review["scope"] = scope
@@ -298,51 +321,67 @@ def prepare(blueprint_path, round_number, renders, captures=None, capture_masks=
     if not layout["pass"] or review["regressions"]:
         for entry in review["parts"].values():
             entry["send"] = None
+    for name, (source, how) in twins.items():  # owed the same kind of review: one critic sees both
+        if review["parts"][name]["send"] and review["parts"][name]["send"] == review["parts"][source]["send"]:
+            review["parts"][name]["shared"] = source
+            review["parts"][source].setdefault("shares", []).append(name)
+            review["parts"][source]["twin"] = how
 
-    # 4. Pair sheets and briefs for the parts that go to a critic.
+    # 4. Pair sheets and briefs for the parts that go to a critic. A part's twins share its folder and its critic.
     send = []
     for name, entry in review["parts"].items():
-        if not entry["send"]:
+        if not entry["send"] or entry.get("shared"):
             continue
+        members = [name] + entry.get("shares", [])
         folder = base / "parts" / name
         folder.mkdir(parents=True, exist_ok=True)
-        rows, has_previous = [], False
-        # PREVIOUS is what the last critic of this part saw, not merely the last capture taken.
-        previous_base, previous = next(((folder_, review_) for folder_, review_ in earlier
-                                        if review_["parts"].get(name, {}).get("send") == "critic"), (None, {"parts": {}}))
-        for view in blueprint["views"]:
-            vid = view["id"]
-            if (name, vid) not in crops:
-                continue
-            row = [("TARGET", crops[(name, vid)][0]), ("CURRENT", crops[(name, vid)][1])]
-            old_box = previous["parts"].get(name, {}).get("boxes", {}).get(vid)
-            if old_box and entry["send"] == "critic":
-                with Image.open(previous_base / "captures" / f"{vid}.png") as old:
-                    row.append(("PREVIOUS", masks.crop_box(old.convert("RGB"), padded(old_box, old))))
-                has_previous = True
-            rows.append((vid, row))
+        rows, views, has_previous = [], {member: [] for member in members}, False
+        for member in members:
+            # PREVIOUS is what the last critic of this part saw, not merely the last capture taken.
+            previous_base, previous = next(((folder_, review_) for folder_, review_ in earlier
+                                            if review_["parts"].get(member, {}).get("send") == "critic"), (None, {"parts": {}}))
+            for view in blueprint["views"]:
+                vid = view["id"]
+                if (member, vid) not in crops:
+                    continue
+                row = [("TARGET", crops[(member, vid)][0]), ("CURRENT", crops[(member, vid)][1])]
+                old_box = previous["parts"].get(member, {}).get("boxes", {}).get(vid)
+                if old_box and entry["send"] == "critic":
+                    with Image.open(previous_base / "captures" / f"{vid}.png") as old:
+                        row.append(("PREVIOUS", masks.crop_box(old.convert("RGB"), padded(old_box, old))))
+                    has_previous = True
+                rows.append((vid if len(members) == 1 else f"{member} {vid}", row))
+                views[member].append(vid)
         pair_sheet(rows).save(folder / "pair.png")
         pairs = ["pair.png"]
         if len(rows) > 1 and cell_width(rows) < CELL:  # too small to judge from: give every view a sheet of its own as well
-            pairs = [f"pair-{vid}.png" for vid, _ in rows]
+            pairs = [f"pair-{label.replace(' ', '-')}.png" for label, _ in rows]
             for row, file in zip(rows, pairs):
                 pair_sheet([row]).save(folder / file)
         part = next((blueprints.resolve(blueprint, p) for p in blueprint["parts"] if p["id"] == name), None)
-        measured_values, settled = {}, []
-        for vid in [v for v, _ in rows] if part else []:
-            for key, m in measured["views"][vid]["parts"][name]["measures"].items():
-                measured_values.setdefault(vid, {})[key] = {"target": m["target"], "current": m["current"]}
-                settled.append({"key": f"{name}.{vid}.{key}", "value": m["target"], "source": "blueprint",
-                                "fact": f"{name} {measure.LABELS[key]} in {vid} is {m['target']} H (currently {m['current']} H, within tolerance)"})
-        settled += ledger.facts_for(ledger_path, name if part else None)
+        measured_values, settled = {member: {} for member in members}, []
+        for member in members if part else []:
+            for vid in views[member]:
+                for key, m in measured["views"][vid]["parts"][member]["measures"].items():
+                    measured_values[member].setdefault(vid, {})[key] = {"target": m["target"], "current": m["current"]}
+                    settled.append({"key": f"{member}.{vid}.{key}", "value": m["target"], "source": "blueprint",
+                                    "fact": f"{member} {measure.LABELS[key]} in {vid} is {m['target']} H (currently {m['current']} H, within tolerance)"})
+        for member in members:
+            settled += [fact for fact in ledger.facts_for(ledger_path, member if part else None) if fact not in settled]
         directives = []
-        act_on = states.get(name, {}).get("act_on")
-        if act_on and entry["send"] == "critic" and (rounds / act_on).exists():
-            old_verdict = verdict.load(rounds / act_on)
-            directives = [{"id": item["id"], "change": item["change"]} for key in ("blockers", "next") for item in old_verdict.get(key, [])]
-        brief = {"part": name, "round": round_number, "subject": blueprint["subject"], "pair": "pair.png", "pairs": pairs, "views": [v for v, _ in rows],
+        for act_on in dict.fromkeys(states.get(member, {}).get("act_on") for member in members):
+            if act_on and entry["send"] == "critic" and (rounds / act_on).exists():
+                old_verdict = verdict.load(rounds / act_on)
+                directives += [{"id": item["id"], "change": item["change"]} for key in ("blockers", "next") for item in old_verdict.get(key, [])]
+        brief = {"part": name, "round": round_number, "subject": blueprint["subject"], "pair": "pair.png", "pairs": pairs, "views": views[name],
                  "form": part["form"] if part else ASSEMBLY_FORM, "colours": part["colours"] if part else [],
-                 "measured": measured_values, "settled": settled, "has_previous": has_previous, "previous_directives": directives, "scope": SCOPE}
+                 "measured": measured_values[name], "settled": settled, "has_previous": has_previous, "previous_directives": directives, "scope": SCOPE}
+        if len(members) > 1:
+            others = members[1:]
+            how = "mirrored left to right" if entry["twin"] == "mirror" else "copied"
+            brief["also"] = [{"part": member, "views": views[member], "measured": measured_values[member]} for member in others]
+            brief["twins"] = TWIN_RULE.format(others=" and ".join(others), verb="is" if len(others) == 1 else "are", part=name, how=how,
+                                              all="both" if len(others) == 1 else "all of them")
         passed = {v: {"overlap": r["overlap"], "needs": r["needs"]} for v, r in entry.get("outline", {}).get("views", {}).items() if r["status"] == "pass"}
         if passed:
             brief.update(outline=passed, scope=SCOPE + OUTLINE_SCOPE)
@@ -354,7 +393,7 @@ def prepare(blueprint_path, round_number, renders, captures=None, capture_masks=
                                   "images": [{"id": g["id"], "shows": g["shows"], "model": g["model"]} for g in generated[-4:]]}
         (folder / "brief.json").write_text(json.dumps(brief, indent=1) + "\n", encoding="utf-8")
         suffix = "-confirm" if entry["send"] == "confirm" else ""
-        send.append({"part": name, "role": entry["send"], "folder": folder.as_posix(),
+        send.append({"part": name, **({"parts": members} if len(members) > 1 else {}), "role": entry["send"], "folder": folder.as_posix(),
                      "verdict": (base / "verdicts" / f"{name}{suffix}.json").as_posix()})
 
     (base / "review.json").write_text(json.dumps(review, indent=1) + "\n", encoding="utf-8")
