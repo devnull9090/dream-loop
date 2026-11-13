@@ -7,12 +7,17 @@ colours and form notes. Every later check and critic works from this sheet.
 
   python blueprint.py validate .dream-loop/blueprint.json [--write]
   python blueprint.py overlay  .dream-loop/blueprint.json --out .dream-loop/blueprint.png
+  python blueprint.py outline  .dream-loop/blueprint.json [--part head ...] [--view side] [--write] [--out outlines.png]
   python blueprint.py blockout .dream-loop/blueprint.json --out .dream-loop/blockout.json [--no-refs]
 
 validate  lists everything wrong with the sheet (exit status 2) or prints one JSON line.
           --write fills in target_size, colours sampled at their "at" points, and the
           derived "measures" block (sizes and positions as ratios of subject height H).
-overlay   draws every box and joint on the target so the boxes can be checked by eye.
+overlay   draws every box, outline and joint on the target so they can be checked by eye.
+outline   proposes a part's outline in each view that shows it, by keeping the pixels inside its
+          box that are nearer its sampled colours than the background's or a neighbour's. It is a
+          first draft: --out draws it, --write stores it under the part's "outlines" (--replace
+          to overwrite one already there), and the author then corrects the points by hand.
 blockout  turns the measures into one primitive per part (centre and size in H) to
           start, or restart, the model from. An extent the target shows from no direction is
           taken from a generated view the user approved for that purpose (refgen.py), when
@@ -38,7 +43,11 @@ TOLERANCES = {
     "min_visible": 0.35,  # a part showing less than this share of itself in a view is not measured there
     "camera_yaw": 20.0,  # how far a camera solve may move from the blueprint estimate, degrees
     "camera_pitch": 10.0,
+    "outline_iou": 0.85,  # overlap a part's mask must reach against its outline, both scaled to the outline's box
+    "outline_reach": 0.12,  # furthest either may extend beyond the other, as a share of the part's longer side
 }
+OUTLINE_FIT = 0.08  # an outline's bounds may differ from the part's box by this share of the box's longer side
+OUTLINE_WORK = 160  # proposals are traced at this many pixels on the box's longer side
 HEX = re.compile(r"#[0-9a-fA-F]{6}")
 
 
@@ -62,6 +71,16 @@ def is_point(point):
 def inside(box, outer, slack=0.01):
     return (box[0] >= outer[0] - slack and box[1] >= outer[1] - slack
             and box[0] + box[2] <= outer[0] + outer[2] + slack and box[1] + box[3] <= outer[1] + outer[3] + slack)
+
+
+def is_outline(points):
+    return isinstance(points, list) and len(points) >= 3 and all(is_point(p) for p in points)
+
+
+def bounds(points):
+    """The x, y, w, h box round a list of points."""
+    xs, ys = [p[0] for p in points], [p[1] for p in points]
+    return [min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)]
 
 
 def tolerances(blueprint):
@@ -214,6 +233,24 @@ def problems(blueprint):
                 errors.append(f"{name}: box in view {view_id} reaches outside that view's subject_box")
             else:
                 boxes_in[view_id] += 1
+        outlines = part.get("outlines", {})
+        if not isinstance(outlines, dict):
+            errors.append(f"{name}: outlines must map a view id to a list of x, y points")
+            outlines = {}
+        for view_id, points in outlines.items():
+            box = boxes.get(view_id)
+            if not is_box(box):
+                errors.append(f"{name}: outline in view {view_id} needs the part's box in that view")
+            elif not is_outline(points):
+                errors.append(f"{name}: outline in view {view_id} must be at least three x, y points as fractions of the target")
+            else:
+                found, slack = bounds(points), OUTLINE_FIT * max(box[2], box[3])
+                if found[2] <= 0 or found[3] <= 0:
+                    errors.append(f"{name}: outline in view {view_id} has no area")
+                elif max(abs(found[0] - box[0]), abs(found[1] - box[1]), abs(found[0] + found[2] - box[0] - box[2]),
+                         abs(found[1] + found[3] - box[1] - box[3])) > slack:
+                    warnings.append(f"{name}: outline in view {view_id} does not fill the part's box there; one of them is wrong "
+                                    "(the box sets the part's size, the outline its shape)")
     for view_id, count in boxes_in.items():
         if count < 2:
             errors.append(f"view {view_id}: at least two parts need a box in it, or nothing there can be measured")
@@ -289,7 +326,130 @@ def write_derived(blueprint, path):
     return errors, warnings
 
 
-def overlay(blueprint, path, out, max_edge=1568):
+def trace(inside, width, height):
+    """The outer boundary of a filled region on a pixel grid, as lattice corners walked with the region on the right."""
+    def filled(x, y):
+        return 0 <= x < width and 0 <= y < height and inside[y * width + x]
+
+    start = next((i % width, i // width) for i, value in enumerate(inside) if value)
+    turns = [(1, 0), (0, 1), (-1, 0), (0, -1)]  # east, south, west, north: each is a right turn from the one before
+    ahead = [((0, -1), (0, 0)), ((0, 0), (-1, 0)), ((-1, 0), (-1, -1)), ((-1, -1), (0, -1))]  # (left, right) pixel ahead
+    (x, y), d, points = start, 0, []
+    while True:
+        (lx, ly), (rx, ry) = ahead[d]
+        new = (d - 1) % 4 if filled(x + lx, y + ly) else d if filled(x + rx, y + ry) else (d + 1) % 4
+        if new != d:
+            points.append((x, y))
+        if (x, y) == start and new == 0 and points:
+            return points  # back at the first corner, about to repeat the first step
+        d = new
+        x, y = x + turns[d][0], y + turns[d][1]
+
+
+def simplify(points, limit):
+    """A closed polygon reduced to at most limit points, dropping the ones that bend the line least."""
+    def distance(p, a, b):
+        length = math.dist(a, b)
+        if not length:
+            return math.dist(p, a)
+        return abs((b[0] - a[0]) * (a[1] - p[1]) - (a[0] - p[0]) * (b[1] - a[1])) / length
+
+    def reduce(line, epsilon):
+        keep, stack = {0, len(line) - 1}, [(0, len(line) - 1)]
+        while stack:
+            first, last = stack.pop()
+            worst, index = max(((distance(line[i], line[first], line[last]), i) for i in range(first + 1, last)), default=(0, None))
+            if worst > epsilon:
+                keep.add(index)
+                stack += [(first, index), (index, last)]
+        return [line[i] for i in sorted(keep)]
+
+    if len(points) <= 3:
+        return points
+    far = max(range(len(points)), key=lambda i: math.dist(points[i], points[0]))
+    epsilon = 0.75
+    while True:
+        out = reduce(points[:far + 1], epsilon)[:-1] + reduce(points[far:] + points[:1], epsilon)[:-1]
+        if len(out) <= limit or epsilon > 64:
+            return out
+        epsilon *= 1.3
+
+
+def propose_outline(blueprint, image, part, view, tolerance=110, limit=28):
+    """A first outline for one part in one view, traced from the target.
+
+    A pixel inside the part's box belongs to the part when it is nearer one of the part's sampled
+    colours than the view's background or the colours of any other part whose box overlaps this
+    one. The largest connected region is kept, its holes are filled and its boundary is traced.
+    Returns (points as fractions of the target, share of the box it covers), or (None, 0.0)."""
+    from PIL import ImageFilter
+    import masks  # here, not at the top: masks needs Pillow, validate does not
+
+    def rgb(value):
+        return tuple(int(value[i:i + 2], 16) for i in (1, 3, 5))
+
+    box = part["boxes"][view["id"]]
+    own = [rgb(c["hex"]) for c in resolve(blueprint, part)["colours"] if c.get("hex")]
+    others = [rgb(c["hex"]) for p in blueprint["parts"] if p["id"] != part["id"] and view["id"] in p.get("boxes", {})
+              and masks.box_iou(p["boxes"][view["id"]], box) > 0 for c in resolve(blueprint, p)["colours"] if c.get("hex")]
+    others = [c for c in others if min(math.dist(c, o) for o in own) > 24] if own else others  # a shared material stays with the part
+    background = view.get("background", "auto")
+    if background != "none":
+        others.append(tuple(masks.median_colour(masks.border_strips(masks.crop_box(image, view["frame"]))))
+                      if background == "auto" else rgb(background))
+    crop = masks.crop_box(image, box).convert("RGB")
+    scale = OUTLINE_WORK / max(crop.size)
+    width, height = max(2, round(crop.width * scale)), max(2, round(crop.height * scale))
+    crop = crop.resize((width, height)).filter(ImageFilter.MedianFilter(3))
+    inside = []
+    for pixel in pixels(crop):
+        near = min((math.dist(pixel, c) for c in own), default=1e9)
+        inside.append(near <= tolerance and near <= min((math.dist(pixel, c) for c in others), default=1e9))
+    # Largest 4-connected region.
+    label, best = [0] * len(inside), []
+    for seed in range(len(inside)):
+        if inside[seed] and not label[seed]:
+            label[seed], region, stack = 1, [], [seed]
+            while stack:
+                i = stack.pop()
+                region.append(i)
+                for j in ((i - 1) if i % width else -1, (i + 1) if (i + 1) % width else -1, i - width, i + width):
+                    if 0 <= j < len(inside) and inside[j] and not label[j]:
+                        label[j] = 1
+                        stack.append(j)
+            best = max(best, region, key=len)
+    if len(best) < 9:
+        return None, 0.0
+    region = [False] * len(inside)
+    for i in best:
+        region[i] = True
+    points = simplify(trace(region, width, height), limit)
+    return ([[round(box[0] + x / width * box[2], 4), round(box[1] + y / height * box[3], 4)] for x, y in points],
+            round(len(best) / len(inside), 3))
+
+
+def propose_outlines(blueprint, path, part_ids=None, view_ids=None, tolerance=110, limit=28):
+    """Proposed outlines as {part: {view: points}}, with a note for every one that could not be traced."""
+    from PIL import Image
+    image = Image.open(target_path(blueprint, path)).convert("RGB")
+    found, notes = {}, []
+    for part in blueprint["parts"]:
+        if part_ids and part["id"] not in part_ids:
+            continue
+        for view in blueprint["views"]:
+            if view["id"] not in part["boxes"] or (view_ids and view["id"] not in view_ids):
+                continue
+            points, share = propose_outline(blueprint, image, part, view, tolerance, limit)
+            if points is None:
+                notes.append(f"{part['id']} in {view['id']}: nothing in its box is near its sampled colours; add a colour point or trace it by hand")
+                continue
+            found.setdefault(part["id"], {})[view["id"]] = points
+            if share < 0.25:
+                notes.append(f"{part['id']} in {view['id']}: the proposal covers only {share:.0%} of the box; check it against the target")
+    return found, notes
+
+
+def overlay(blueprint, path, out, max_edge=1568, proposed=None):
     from PIL import Image, ImageDraw
     image = Image.open(target_path(blueprint, path)).convert("RGB")
     scale = min(1, max_edge / max(image.size))
@@ -309,6 +469,10 @@ def overlay(blueprint, path, out, max_edge=1568):
     for n, part in enumerate(blueprint["parts"]):
         for box in part["boxes"].values():
             rect(box, palette[n % len(palette)], 2, part["id"])
+        for points in {**part.get("outlines", {}), **(proposed or {}).get(part["id"], {})}.values():
+            draw.line([(x * image.width, y * image.height) for x, y in points + points[:1]], fill=palette[n % len(palette)], width=2)
+            for x, y in points:
+                draw.rectangle((x * image.width - 2, y * image.height - 2, x * image.width + 2, y * image.height + 2), fill=(255, 255, 255))
     for joint in blueprint.get("joints") or []:
         for x, y in joint["points"].values():
             cx, cy = x * image.width, y * image.height
@@ -408,11 +572,19 @@ def blockout(blueprint, hints=None):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("validate", "overlay", "blockout"):
+    for name in ("validate", "overlay", "blockout", "outline"):
         command = sub.add_parser(name)
         command.add_argument("blueprint", help="Path to blueprint.json")
         if name == "validate":
             command.add_argument("--write", action="store_true", help="Record target_size, sampled colours and measures in the file")
+        elif name == "outline":
+            command.add_argument("--part", action="append", help="Part to trace; repeatable (default: every part)")
+            command.add_argument("--view", action="append", help="View to trace it in; repeatable (default: every view with its box)")
+            command.add_argument("--tolerance", type=float, default=110, help="Furthest a pixel may be from the part's colours, 0-441 (default: %(default)s)")
+            command.add_argument("--points", type=int, default=28, help="Most points per outline (default: %(default)s)")
+            command.add_argument("--write", action="store_true", help="Store the proposals in the blueprint")
+            command.add_argument("--replace", action="store_true", help="With --write, overwrite outlines already there")
+            command.add_argument("--out", help="Picture of the proposals drawn on the target")
         else:
             command.add_argument("--out", required=True, help="File to write")
         if name == "blockout":
@@ -431,6 +603,27 @@ def main(argv=None):
         if args.command == "overlay":
             overlay(blueprint, args.blueprint, args.out)
             print(json.dumps({"overlay": Path(args.out).as_posix()}))
+        elif args.command == "outline":
+            for name, known in ((args.part, [p["id"] for p in blueprint["parts"]]), (args.view, [v["id"] for v in blueprint["views"]])):
+                if name and set(name) - set(known):
+                    raise BlueprintError(f"unknown {', '.join(sorted(set(name) - set(known)))}; choose from {', '.join(known)}")
+            found, notes = propose_outlines(blueprint, args.blueprint, args.part, args.view, args.tolerance, max(3, args.points))
+            result = {"outlines": found, "notes": notes}
+            if args.out:
+                overlay(blueprint, args.blueprint, args.out, proposed=found)
+                result["overlay"] = Path(args.out).as_posix()
+            if args.write:
+                kept = []
+                for part in blueprint["parts"]:
+                    for view_id, points in found.get(part["id"], {}).items():
+                        if view_id in part.get("outlines", {}) and not args.replace:
+                            kept.append(f"{part['id']} in {view_id}")
+                        else:
+                            part.setdefault("outlines", {})[view_id] = points
+                Path(args.blueprint).write_text(json.dumps(blueprint, indent=1) + "\n", encoding="utf-8")
+                result = {"traced": {name: sorted(views) for name, views in found.items()}, "written": True, "kept": kept, "notes": notes,
+                          **({"overlay": result["overlay"]} if args.out else {})}
+            print(json.dumps(result, separators=(",", ":")))
         else:
             hints = []
             if not args.no_refs and (Path(args.blueprint).parent / "refs" / "refs.json").exists():

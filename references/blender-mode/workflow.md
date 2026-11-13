@@ -2,7 +2,7 @@
 
 Use this to build or rebuild a 3D subject (a character, creature, vehicle or prop) in Blender so that it matches an approved target: a design sheet, a concept board or reference renders. The model may stay in Blender or go on to a game engine; either way the capture that is judged is of the real product.
 
-It differs from the other workflows in four ways. Proportions are measured, not judged. A critic sees one part at a time. Most iterations never reach a critic. And work proceeds in a fixed order, so nobody polishes a surface on a model whose legs are the wrong length.
+It differs from the other workflows in four ways. Proportions are measured, not judged, and so is each part's silhouette where the blueprint gives one. A critic sees one part at a time. Most iterations never reach a critic. And work proceeds in a fixed order, so nobody polishes a surface on a model whose legs are the wrong length.
 
 ## What you need
 
@@ -21,7 +21,7 @@ Resolve script paths from this skill's directory; `SCRIPTS` below stands for `/p
 | `ledger.json` | Facts agreed since. |
 | `refs/` | Extra views and part close-ups generated from the target, with `refs.json`. Optional. |
 | `config.json`, `secrets.env` | Image-generation settings and the API key, when references are generated. |
-| `inner/` | The latest inner-loop renders and side-by-side sheets. |
+| `inner/` | The latest inner-loop renders, side-by-side sheets and outline differences (`<part>.form.png`). |
 | `rounds/round-N/` | One outer round: renders, captures, part folders, verdicts. |
 
 `WHERE` in the commands is how to reach Blender: `--blend model.blend` (headless), `--setup build_model.py` (headless, the script builds the model; add `--blend` to start from a file) or `--socket` (the open session). Prefer whichever rebuilds fastest.
@@ -34,7 +34,7 @@ Work through these in order. Each has one gate, and the gate decides when to mov
 |---|---|---|---|
 | 1. Blockout | One primitive per part, silhouette only | Every view's silhouette overlays the target | `inner.py` (view match) |
 | 2. Proportion lock | The same primitives at the blueprint's sizes and places | Every part's measures within tolerance in every view | `inner.py` (measured layout) |
-| 3. Secondary forms | Real geometry for each part: volumes, plates, joints | Form | Part critic |
+| 3. Secondary forms | Real geometry for each part: volumes, plates, joints | Each outlined part's silhouette matches its outline; then form | `inner.py` (outline), then part critic |
 | 4. Colour and material | Base colours from the blueprint, roughness, metal, emission | Colour and material | Part critic |
 | 5. Surface detail | Texture, seams, wear, small features | Surface detail | Part critic |
 
@@ -79,7 +79,10 @@ Run this after every change. It renders a flat ID-colour mask of every view, sco
 
 - `blockout`: a view's silhouette does not overlay the target. Open `.dream-loop/inner/<view>.match.png` (target only in red, model only in green) and fix the shape.
 - `proportion`: the silhouettes match but a part is the wrong size or in the wrong place. Each line gives the target and the current value, for example `leg_l height in side: target 0.42 H, currently 0.55 H`. Set the model to the target value. Do not nudge.
-- `outer`: both gates pass. Only now is a critic worth asking.
+- `form`: sizes and places are right, but a part's silhouette differs from the outline the blueprint gives it. Each line says which shape extends beyond the other, by how much in H, and where on the part's box: `head outline in side: target extends 0.021 H beyond the model at the top left (0.14 across, 0.10 down its box)` means the model lacks material there; `model extends ...` means it has material the target does not. Open `.dream-loop/inner/<part>.form.png` (white where both agree, red target only, green model only, grey not judged) and change the geometry. This stage replaces critic rounds on silhouette, so stay in it until it passes. If a line contradicts what you see on the target, the outline is wrong: correct it in the blueprint (see "Outlines" in [blueprint.md](blueprint.md)).
+- `outer`: every gate passes. Only now is a critic worth asking.
+
+Parts with no outline skip the `form` stage. `notes` lists outlines that could not be judged in a view because another part covers too much of the part there; that is not a failure, and the part's other views still count.
 
 `.dream-loop/inner/<view>.side.png` shows the target beside the model with every part's box drawn, failures in red. Look at it; do not ask anyone else to.
 
@@ -100,7 +103,9 @@ python SCRIPTS/parts.py prepare --blueprint .dream-loop/blueprint.json --round N
        --capture side=path/to/side.png --capture front=path/to/front.png
 ```
 
-When Blender is the product, give no `--capture` at all and point `--renders` at the folder you rendered to; the pictures there are the captures. Engine captures are given for every view or not at all. The script reruns both gates, checks each engine capture against the mask render from the same camera, and cuts a paired crop for every part that needs judging from that part's own bounds in the mask. It prints the parts to send and where each verdict goes.
+When Blender is the product, give no `--capture` at all and point `--renders` at the folder you rendered to; the pictures there are the captures. Engine captures are given for every view or not at all. The script reruns the gates, checks each engine capture against the mask render from the same camera, and cuts a paired crop for every part that needs judging from that part's own bounds in the mask. It prints the parts to send and where each verdict goes.
+
+A part that fails its outline is not sent: it is listed under `held` with the differences under `form_failing`. Fix it in the inner loop; a critic would only restate what is already measured. The other parts go ahead.
 
 **Ask one critic per part listed.** Use a subagent with a fresh, empty context for each; run them in parallel. Give each one only:
 
@@ -121,6 +126,7 @@ python SCRIPTS/verdict.py .dream-loop/rounds
 Status 2 means a verdict breaks the rules (a size given as a relative change, a settled fact reversed without evidence, a missing verdict); send the listed problem back to that part's critic once. Otherwise act on `decision`:
 
 - **layout** / **restart**: a gate failed at capture time. Go back to the inner loop, or apply the restart rule.
+- **form**: no critic was asked, because every part that needed one fails its outline. Fix those shapes in the inner loop. When some parts were sent and others held, the decision is about the ones sent and `held` lists the rest with what differs.
 - **continue**: work on the open parts using the verdict files in `act_on`: regressions first, then blockers, then next. Leave locked parts alone. Then inner loop, then a new round.
 - **confirm**: the parts in `confirm` were passed by one critic. Ask a second fresh critic for each, with the same folder, saving the reply as `<part>-confirm.json` beside the first, and run `verdict.py` again. Other parts listed as open still need work.
 - **revert**: a locked part changed, or a part got a point worse. Undo that change. If you meant to change a locked part, prepare the round again with `--unlock PART="reason"`.

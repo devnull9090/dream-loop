@@ -37,6 +37,8 @@ HEIGHT = 1.8
 GROW_HEAD = "import bpy\nbpy.data.objects['BO_head'].scale = [v * 1.7 for v in bpy.data.objects['BO_head'].scale]\n"
 DOUBLE = ("import bpy\nfor o in bpy.data.collections['DreamLoop Blockout'].objects:\n"
           "    o.location = [v * 2 for v in o.location]\n    o.scale = [v * 2 for v in o.scale]\n")
+BOX_HEAD = ("import bpy, bmesh\nmesh = bpy.data.meshes.new('Box')\nbm = bmesh.new()\nbmesh.ops.create_cube(bm, size=1.0)\n"
+            "bm.to_mesh(mesh)\nbm.free()\nbpy.data.objects['BO_head'].data = mesh\n")
 LEAN_POSE = ("import bpy\npose = bpy.data.collections.new('Pose_Lean')\nbpy.context.scene.collection.children.link(pose)\n"
              "for o in list(bpy.data.collections['DreamLoop Blockout'].objects):\n"
              "    c = o.copy()\n    pose.objects.link(c)\n"
@@ -209,6 +211,28 @@ class EndToEndTest(Built):
         self.assertFalse(result["layout"])
         self.assertEqual(result["regressions"], ["head"])
         self.assertEqual(call(verdict, str(self.root / "rounds"))[1]["decision"], "revert")
+
+
+@unittest.skipUnless(BLENDER, "Blender is not installed")
+class OutlineTest(Built):
+    """The head has an outline traced from the sheet: its shape is now measured, not only its box."""
+
+    def test_a_part_of_the_right_size_and_the_wrong_shape_is_caught_before_any_critic(self):
+        status, traced, err = call(blueprint, "outline", str(self.blueprint), "--part", "head", "--write")
+        self.assertEqual((status, err, traced["traced"]), (0, "", {"head": ["front", "side"]}))
+        status, result, err = self.run_inner("--long-edge", "512")
+        self.assertEqual((status, err), (0, ""), result)
+        self.assertEqual((result["stage"], result["form"]["head"]["status"]), ("outer", "pass"))
+        self.assertGreater(min(result["form"]["head"]["overlap"].values()), 0.93)
+        self.assertTrue((self.root / "inner" / "head.form.png").exists())
+
+        # A box with the head's bounds passes every measure of size and place, and fails on shape, with where.
+        status, result, _ = self.run_inner("--long-edge", "512", "--setup", self.script("box_head.py", BOX_HEAD), "--out", str(self.root / "box"))
+        self.assertEqual((status, result["stage"], result["parts"]["head"], result["form"]["head"]["status"]), (1, "form", "pass", "fail"))
+        self.assertTrue(any(line.startswith("head outline in front: model extends 0.0") and "top left" in line for line in result["failing"]), result["failing"])
+        self.assertFalse(any("target extends" in line for line in result["failing"]))
+        status, prepared, _ = call(parts, "prepare", "--blueprint", str(self.blueprint), "--round", "1", "--renders", str(self.root / "box"))
+        self.assertEqual((status, prepared["held"], [s["part"] for s in prepared["send"]]), (0, ["head"], ["body", "leg_l", "leg_r"]))
 
 
 @unittest.skipUnless(BLENDER, "Blender is not installed")

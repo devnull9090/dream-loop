@@ -10,6 +10,7 @@ A folder for this part:
 - `brief.json`:
   - `form` and `colours`: what the blueprint says this part is, with colours sampled from the target.
   - `measured`: the part's height, width and centre in each view as ratios of subject height **H**, target and current. These were measured from mask renders and are within tolerance.
+  - `outline`: present when the part's silhouette was compared with an outline traced on the target; it lists the views where the two agree within tolerance.
   - `settled`: facts already agreed. Treat them as constraints.
   - `previous_directives`: what the last critic of this part asked for.
   - `scope`: what is outside the judgement.
@@ -22,6 +23,8 @@ When the part is `assembly`, the crops show the whole subject and every part has
 ## What is already decided
 
 The part's size and position are measured, not judged. Do not estimate proportions from the picture and do not ask for the part as a whole to be made larger, smaller, longer or shorter: the numbers in `measured` say it is the right size.
+
+In the views listed under `outline` the part's silhouette is measured as well. Judge the forms inside it there: volumes, plates, ridges, edges, how the surface turns. Do not ask for the silhouette itself to move in those views unless the TARGET crop plainly shows the difference, and then say where and by how much in H.
 
 If you are sure a value in `measured` or `settled` is wrong, because the target crop plainly shows something else, you may challenge it: give the directive a `measure` (the fact's `key`), a `target_value`, and an `evidence` sentence saying what in the target shows it. A challenge without evidence is rejected, and the evidence must be something visible in a TARGET crop, never in a generated reference. Expect it to be checked against the blueprint, not acted on directly.
 
