@@ -16,7 +16,7 @@ Placeholders, filled from the blueprint:
 |---|---|
 | `{inputs}` | One sentence per image sent, numbered, saying what it is and how far to trust it |
 | `{subject}` | The blueprint's `subject` |
-| `{pose_clause}` | " in its <pose> pose", from the source view |
+| `{pose_rule}` | The pose line: keep the pose in image 1, or with `--pose neutral` stand the subject in a symmetric modelling stance without changing any part |
 | `{view_name}`, `{view_description}`, `{framing}` | The view asked for, from the table in `refgen.py` |
 | `{parts}` | Every part, by name |
 | `{palette}` | Every part's sampled colours |
@@ -40,7 +40,7 @@ What must stay exactly as it is in image 1:
 - Shape language. Hard edges stay hard and soft edges stay soft; flat facets stay flat facets and curves stay curves.
 - Colours, on the same parts: {palette}. Do not shift hue, saturation or brightness.
 - Materials and markings, at the same scale and in the same places.
-- Pose{pose_clause}. Do not re-pose, relax or animate the subject.
+- {pose_rule}
 - Rendering style. Match image 1. Do not restyle, repaint, clean up, add detail or improve anything.
 
 Where this camera sees a side of the subject that image 1 does not show: continue what is visible and nothing more. Use the same shapes, colours, materials and level of detail as the nearest visible parts, mirrored where the subject is plainly symmetric. Invent no new feature there: no ornament, marking, seam, panel, accessory or texture. Where in doubt, keep the surface plain.

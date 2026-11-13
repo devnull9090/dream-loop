@@ -58,7 +58,7 @@ python /path/to/dream-loop/scripts/refgen.py config --provider openai --model gp
 python /path/to/dream-loop/scripts/refgen.py key --provider openai
 ```
 
-The agent tells you the estimated cost before each batch (four images at most by default), then shows you every result beside the original. Nothing generated is used until you approve it, each image is recorded with its prompt, inputs, model and cost in `.dream-loop/refs/refs.json`, and a generated image never overrides the approved design. See [references/blender-mode/generated-references.md](references/blender-mode/generated-references.md).
+The agent tells you the estimated cost before each batch (four images at most by default), then shows you every result beside the original. Nothing generated is used until you approve it, each image is recorded with its prompt, inputs, model and cost in `.dream-loop/refs/refs.json`, and a generated image never overrides the approved design. If your design shows only an action pose, the agent can instead generate a neutral-pose turnaround (front, side, back) for you to approve as the modelling target, keeping the original as the final check once the model is rigged and posed. See [references/blender-mode/generated-references.md](references/blender-mode/generated-references.md).
 
 ## Example
 
