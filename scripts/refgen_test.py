@@ -2,6 +2,7 @@
 import base64
 import contextlib
 import getpass
+import http.client
 import io
 import json
 import os
@@ -217,6 +218,7 @@ class GenerateTest(RefgenCase):
         first, second = self.calls
         self.assertEqual(first["url"], "https://api.openai.com/v1/images/edits")
         self.assertEqual(first["headers"]["Authorization"], f"Bearer {KEY}")
+        self.assertTrue(first["headers"]["User-Agent"].startswith("dream-loop"))
         self.assertEqual({k: v for k, v in first["body"].items() if k not in ("prompt", "images")},
                          {"model": "gpt-image-2.6-sunburst", "size": "1024x1536", "quality": "high"})
         self.assertEqual(len(first["body"]["images"]), 2)
@@ -297,6 +299,8 @@ class GenerateTest(RefgenCase):
         self.assertIn("may still have been accepted and charged", result["failed"]["error"])
         self.replies = [urllib.error.URLError("getaddrinfo failed")]
         self.assertIn("was not sent", self.bp("generate", "--view", "front")[1]["failed"]["error"])
+        self.replies = [http.client.IncompleteRead(b"")]
+        self.assertIn("reply was cut off", self.bp("generate", "--view", "front")[1]["failed"]["error"])
         self.replies = [(200, b'{"data": []}')]
         self.assertIn("held no image", self.bp("generate", "--view", "front")[1]["failed"]["error"])
         self.assertFalse((self.refs / "refs.json").exists())

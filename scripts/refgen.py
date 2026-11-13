@@ -44,6 +44,7 @@ import base64
 import datetime
 import getpass
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -300,9 +301,11 @@ class OpenAI(Provider):
             raise RefgenError("no OpenAI API key: run `python refgen.py key --provider openai` in your own terminal, or set OPENAI_API_KEY")
         body = self.body(prompt, images, size)
         sent = {k: v for k, v in body.items() if k not in ("prompt", "images")}
-        headers = {"Authorization": f"Bearer {self.key}", "Content-Type": "application/json"}
+        headers = {"Authorization": f"Bearer {self.key}", "Content-Type": "application/json", "User-Agent": "dream-loop-refgen/1"}
         try:
             status, raw = http_post(self.config.get("base_url") or self.url, headers, json.dumps(body).encode("utf-8"), self.config["timeout"])
+        except http.client.HTTPException as error:  # the connection broke while the reply was being read
+            raise RefgenError(scrub(f"openai: the reply was cut off; the image may still have been made and charged ({error!r}). It was not retried.", self.key))
         except (TimeoutError, urllib.error.URLError, OSError) as error:
             timed_out = isinstance(error, TimeoutError) or "timed out" in str(error).lower()
             raise RefgenError(scrub(f"openai: {'the request timed out; it may still have been accepted and charged' if timed_out else 'the request was not sent'} "
