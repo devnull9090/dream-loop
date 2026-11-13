@@ -13,6 +13,8 @@ design as the input image and a prompt that forbids changing it.
   python refgen.py list     --blueprint .dream-loop/blueprint.json
   python refgen.py approve  --blueprint .dream-loop/blueprint.json view-front-1 [...]
   python refgen.py reject   --blueprint .dream-loop/blueprint.json view-front-1 --reason "six toes"
+  python refgen.py boxes    --blueprint .dream-loop/blueprint.json view-front-1 --box head=0.4,0.1,0.2,0.2 --box body=...
+  python refgen.py approve  --blueprint .dream-loop/blueprint.json view-front-1 --for-blockout
 
 config    shows or sets the provider, model and options kept in .dream-loop/config.json.
 key       asks for the provider's API key without showing it and keeps it in .dream-loop/secrets.env,
@@ -24,6 +26,10 @@ generate  makes the images. Each is saved in .dream-loop/refs with a sheet (<id>
           provider, model, prompt, input hashes, parameters and cost.
 approve   records that the user has looked at the sheet and accepted the image. Nothing generated
           is used anywhere until then; reject records why it was not.
+boxes     marks the parts on an approved front, back, left or right view (x,y,w,h as fractions of
+          that image) and writes <id>.boxes.png to check them by eye. Once the user approves the
+          view --for-blockout, blueprint.py blockout takes from it the extents the approved design
+          shows from no direction. It changes no measure and no gate.
 
 --view is one of front, back, left, right, top, three_quarter_left, three_quarter_right,
 three_quarter_back_left, three_quarter_back_right. --part is a part id, or PART@VIEW for a close-up
@@ -613,6 +619,74 @@ def approved(blueprint, blueprint_path, part=None, kind=None):
             if state(entry, folder, current) == "approved" and (kind is None or entry["kind"] == kind) and (wanted is None or entry.get("part") in wanted)]
 
 
+def blockout_hints(blueprint, blueprint_path):
+    """Measures, in H, from the generated views the user approved for the blockout: one entry per view with its yaw.
+
+    Only level views count (front, back, left, right), and only while the view and its boxes are as approved."""
+    hints = []
+    for entry in approved(blueprint, blueprint_path, kind="view"):
+        marked = entry.get("blockout") or {}
+        if not (marked.get("approved") and entry.get("boxes") and abs(entry["camera"]["pitch"]) < 1):
+            continue
+        parts = {name: blueprints.measure_box(box, entry["subject_box"], entry["size"]) for name, box in entry["boxes"].items()}
+        hints.append({"ref": entry["id"], "yaw": entry["camera"]["yaw"], "parts": parts})
+    return hints
+
+
+def mark_boxes(args):
+    """Record part boxes on an approved generated view and draw them for checking."""
+    from PIL import Image, ImageDraw
+    import masks
+    blueprint = blueprints.load(args.blueprint)
+    folder = refs_dir(args.blueprint)
+    manifest = read_manifest(folder)
+    entry = next((e for e in manifest["refs"] if e["id"] == args.id), None)
+    if entry is None:
+        raise RefgenError(f"no reference {args.id}; see `refgen.py list`")
+    if state(entry, folder, target_sha(blueprint, args.blueprint)) != "approved":
+        raise RefgenError(f"{args.id} is not an approved, current reference; the user accepts the image before boxes are drawn on it")
+    if entry["kind"] != "view" or abs(entry["camera"]["pitch"]) >= 1:
+        raise RefgenError("only a front, back, left or right view can inform the blockout")
+
+    def numbers(text, what):
+        try:
+            box = [float(v) for v in text.split(",")]
+        except ValueError:
+            box = None
+        if not blueprints.is_box(box):
+            raise RefgenError(f"{what} must be x,y,w,h as fractions of the generated image, got {text!r}")
+        return box
+
+    image = Image.open(folder / entry["file"]).convert("RGB")
+    if args.subject:
+        subject = numbers(args.subject, "--subject")
+    else:
+        keyed, flat = masks.border_key(image)
+        subject = masks.fraction_box(keyed)
+        if flat < 0.9 or subject is None:
+            raise RefgenError("the subject could not be keyed off the background; give its box with --subject x,y,w,h")
+    boxes = {}
+    known = [p["id"] for p in blueprint["parts"]]
+    for item in args.box:
+        name, _, value = item.partition("=")
+        if name not in known:
+            raise RefgenError(f"unknown part {name!r} in --box; the blueprint has {', '.join(known)}")
+        boxes[name] = numbers(value, f"--box {name}")
+        if not blueprints.inside(boxes[name], subject, 0.02):
+            raise RefgenError(f"--box {name} reaches outside the subject's box {[round(v, 3) for v in subject]}")
+    entry.update(subject_box=[round(v, 4) for v in subject], boxes=boxes, boxes_sheet=f"{entry['id']}.boxes.png")
+    entry.pop("blockout", None)  # new boxes need the user's eye again
+    draw = ImageDraw.Draw(image)
+    for name, box in [("subject", subject)] + list(boxes.items()):
+        colour = (255, 255, 255) if name == "subject" else (255, 80, 80)
+        draw.rectangle((box[0] * image.width, box[1] * image.height, (box[0] + box[2]) * image.width, (box[1] + box[3]) * image.height), outline=colour, width=3)
+        draw.text((box[0] * image.width + 5, box[1] * image.height + 4), name, fill=colour)
+    image.save(folder / entry["boxes_sheet"])
+    write_manifest(folder, manifest)
+    return {"id": entry["id"], "boxes": sorted(boxes), "sheet": (folder / entry["boxes_sheet"]).as_posix(),
+            "next": f"show the user this sheet; `refgen.py approve {entry['id']} --for-blockout` records that these boxes may set the blockout's unseen extents"}
+
+
 def reference_sheet(entries, folder, max_edge=1568):
     """Approved generated references side by side, each labelled GENERATED, for a critic."""
     from PIL import Image, ImageDraw
@@ -906,12 +980,18 @@ def decide(args, accept):
         if accept and entry["provider"] == "fake":
             raise RefgenError(f"{ref_id} is a placeholder from the fake provider and cannot be approved")
         stamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-        if accept:
+        if accept and args.for_blockout:
+            if not (entry.get("approved") and entry.get("boxes")):
+                raise RefgenError(f"{ref_id}: approve the image first, then mark its parts with `refgen.py boxes`, then approve --for-blockout")
+            entry["blockout"] = {"approved": True, "approved_at": stamp, "approved_by": args.by}
+        elif accept:
             entry.update(approved=True, approved_at=stamp, approved_by=args.by)
             entry.pop("rejected", None)
         else:
             entry.update(approved=False, rejected=args.reason.strip(), rejected_at=stamp)
-        done.append({"id": ref_id, "state": "approved" if accept else "rejected", "checks": entry["checks"]["warnings"]})
+            entry.pop("blockout", None)
+        done.append({"id": ref_id, "state": "approved for the blockout" if accept and args.for_blockout else "approved" if accept else "rejected",
+                     "checks": entry["checks"]["warnings"]})
     write_manifest(folder, manifest)
     return done
 
@@ -956,8 +1036,15 @@ def main(argv=None):
         command.add_argument("ids", nargs="+", metavar="ID")
         if name == "approve":
             command.add_argument("--by", default="user", help="Who accepted it (default: %(default)s)")
+            command.add_argument("--for-blockout", action="store_true",
+                                 help="The user has also checked the part boxes on this view (refgen.py boxes) and accepts it setting the blockout's unseen extents")
         else:
             command.add_argument("--reason", required=True, help="What is wrong with it")
+    command = sub.add_parser("boxes")
+    command.add_argument("--blueprint", default=".dream-loop/blueprint.json")
+    command.add_argument("id", metavar="ID")
+    command.add_argument("--box", action="append", required=True, metavar="PART=x,y,w,h", help="A part's tight box on the generated image, as fractions; repeatable")
+    command.add_argument("--subject", metavar="x,y,w,h", help="The whole subject's box (default: keyed off the flat background)")
     args = parser.parse_args(argv)
     status = 0
     try:
@@ -991,6 +1078,8 @@ def main(argv=None):
             result, status = generate(args)
         elif args.command == "list":
             result = listing(args)
+        elif args.command == "boxes":
+            result = mark_boxes(args)
         else:
             result = decide(args, args.command == "approve")
     except (RefgenError, blueprints.BlueprintError, OSError, ValueError, KeyError) as error:
