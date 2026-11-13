@@ -5,6 +5,7 @@ import getpass
 import http.client
 import io
 import json
+import math
 import os
 import subprocess
 import sys
@@ -395,6 +396,33 @@ class BlockoutTest(RefgenCase):
         self.assertEqual(self.blockout("--no-refs")[1], before)
         self.bp("boxes", "view-front-1", *self.boxes)  # redrawn boxes need the user's eye again
         self.assertEqual(self.blockout()[1], before)
+
+    def test_a_three_quarter_target_keeps_its_own_measure_and_takes_only_the_split_from_generated_views(self):
+        data = json.loads(self.blueprint.read_text(encoding="utf-8"))
+        data["views"][0]["camera"]["yaw"] = 40  # the board shows one three-quarter view
+        self.blueprint.write_text(json.dumps(data), encoding="utf-8")
+        cos, sin = math.cos(math.radians(40)), math.sin(math.radians(40))
+        _, before = self.blockout()
+        round_guess = before["body"]["size"][0]
+        self.assertEqual((before["body"]["assumed"], before["body"]["size"][1]), (["depth"], round_guess))
+        self.assertAlmostEqual(round_guess, 0.375 / (cos + sin), places=3)
+        self.bp("generate", "--view", "front", "--view", "left")
+        self.bp("approve", "view-front-1", "view-left-1")
+        self.bp("boxes", "view-front-1", *self.boxes)
+        self.bp("approve", "view-front-1", "--for-blockout")
+        result, parts = self.blockout()  # a front view alone speaks for width; depth stays the guess, and stays listed
+        self.assertAlmostEqual(parts["body"]["size"][0], 160 / 570, delta=0.01)
+        self.assertEqual((parts["body"]["size"][1], parts["body"]["assumed"]), (round_guess, ["depth"]))
+        self.assertEqual(result["from_generated"]["body"], ["view-front-1"])
+        self.bp("boxes", "view-left-1", "--box", "head=0.40,0.117,0.20,0.17", "--box", "body=0.40,0.286,0.20,0.574")
+        self.bp("approve", "view-left-1", "--for-blockout")
+        result, parts = self.blockout()
+        width, depth, _ = parts["body"]["size"]
+        self.assertEqual((result["assumed"], result["from_generated"]["body"]), ({}, ["view-front-1", "view-left-1"]))
+        self.assertAlmostEqual(width / depth, 160 / 102.4, delta=0.03)  # the split is the generated views'
+        self.assertAlmostEqual(cos * width + sin * depth, 0.375, delta=0.002)  # the size across the target's own view is the target's
+        self.assertGreater(depth, 0.15)  # not collapsed toward nothing
+        self.assertEqual(parts["body"]["size"][2], before["body"]["size"][2])
 
     def test_a_generated_view_never_changes_what_the_target_settles(self):
         self.blueprint.write_text(json.dumps(complete()), encoding="utf-8")  # side and front are both on the target

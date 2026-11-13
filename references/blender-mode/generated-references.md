@@ -124,7 +124,14 @@ python SCRIPTS/blueprint.py blockout .dream-loop/blueprint.json --out .dream-loo
 2. Show the user `<id>.boxes.png` and say what it will be used for. If they agree, `approve --for-blockout` records it. Drawing the boxes again clears that approval.
 3. `blueprint.py blockout` then uses the view, and prints `from_generated` with the parts it affected. `--no-refs` ignores generated views.
 
-What it changes is narrow on purpose. A part whose width and depth the target already settles is left exactly as it was. For a part the target leaves undetermined, the generated view's measure is combined with the target's at a third of the weight. Height and height above the base always come from the target. The blueprint, its `measures`, the view-match gate and the measured layout are untouched: the inner loop still checks the model against the target alone, so a wrong generated depth can only make the starting primitive wrong in a direction no target view measures. Check those parts by eye, as you would the `assumed` ones.
+What it changes is narrow on purpose:
+
+- A part whose width and depth the target already settles is left exactly as it was.
+- A generated view speaks only for the axis it faces: a front or back view for width, a left or right view for depth. An axis that a target view faces squarely is never taken from a generated view, and an axis with no generated view stays under `assumed`.
+- When the target shows the part at an angle (a three-quarter view) and both axes have a generated view, the generated views decide only how the size splits between width and depth. The size across the target's own view stays what the target measures.
+- Height and height above the base always come from the target.
+
+The blueprint, its `measures`, the view-match gate and the measured layout are untouched: the inner loop still checks the model against the target alone. A generated view that disagrees with the target therefore cannot make the model pass or fail anything; it can only give a part a poor starting depth, which is what the assumption gave it before. Check those parts by eye, as you would the `assumed` ones.
 
 ## How approved references are used
 

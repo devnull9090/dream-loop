@@ -335,7 +335,7 @@ def solve_pair(rows):
     return ca * along, cb * along, False
 
 
-HINT_WEIGHT = 1 / 3  # a measure from a generated view counts this much of one from the approved target
+FACING = 0.9  # |cos| or |sin| of a view's yaw above which it looks squarely along one axis
 
 
 def blockout(blueprint, hints=None):
@@ -347,9 +347,12 @@ def blockout(blueprint, hints=None):
     seen one; those are listed under "assumed" and are the first thing to check in the model.
 
     hints are measures from generated views the user approved for this purpose, as
-    [{"ref": id, "yaw": degrees, "parts": {part id: measure}}]. They are used only for a part the
-    target leaves undetermined, never to adjust one it settles, and the part then lists the
-    references under "generated".
+    [{"ref": id, "yaw": degrees, "parts": {part id: measure}}]. A hint speaks only for the axis
+    it faces: a front or back view for width, a left or right view for depth. It is used only
+    for a part the target leaves undetermined and only for an axis no target view faces. When
+    both axes are hinted and the target sees the part at an angle, the hints fix the ratio of
+    width to depth and the target's own measure fixes their size. Height and height above the
+    base always come from the target. The part then lists the references under "generated".
     """
     measures = blueprint.get("measures") or derive(blueprint)
     pose = next(v["pose"] for v in blueprint["views"] if v["id"] == blueprint["reference_view"])
@@ -357,30 +360,40 @@ def blockout(blueprint, hints=None):
     out = []
     for part in blueprint["parts"]:
         seen = [(v, measures[v["id"]]["parts"][part["id"]]) for v in views if part["id"] in measures[v["id"]]["parts"]]
-        rows = [(math.radians(v["camera"]["yaw"]), m, 1) for v, m in seen]
-        extra = [(math.radians(h["yaw"]), h["parts"][part["id"]], HINT_WEIGHT) for h in hints or [] if part["id"] in h["parts"]]
+        rows = [(math.radians(v["camera"]["yaw"]), m) for v, m in seen]
+        extra = [(h["ref"], math.radians(h["yaw"]), h["parts"][part["id"]]) for h in hints or [] if part["id"] in h["parts"]]
         if not rows and not extra:
             continue
-
-        def solve(rows):
-            position = solve_pair([(math.cos(a) * w, math.sin(a) * w, m["cx"] * w) for a, m, w in rows])
-            size = solve_pair([(abs(math.cos(a)) * w, abs(math.sin(a)) * w, m["width"] * w) for a, m, w in rows])
-            return position[0], position[1], size[0], size[1], size[2]
-
-        used = []
+        x = y = 0.0
+        known, assumed, used = False, [], []
         if rows:
-            x, y, width, depth, known = solve(rows)
-        if extra and not (rows and known):
-            x, y, width, depth, known = solve(rows + extra)
-            used = sorted({h["ref"] for h in hints if part["id"] in h["parts"]})
-        assumed = []
+            x, y, _ = solve_pair([(math.cos(a), math.sin(a), m["cx"]) for a, m in rows])
+            width, depth, known = solve_pair([(abs(math.cos(a)), abs(math.sin(a)), m["width"]) for a, m in rows])
         if not known:
             # Only one direction was seen, so the split between width and depth is unknown: assume a round section.
-            across = sum(m["width"] for _, m, _ in rows + extra) / len(rows + extra)
-            a = (rows + extra)[0][0]
+            sample = rows or [(a, m) for _, a, m in extra]
+            across = sum(m["width"] for _, m in sample) / len(sample)
+            a = sample[0][0]
             width = depth = across / (abs(math.cos(a)) + abs(math.sin(a)))
             assumed = ["depth" if abs(math.cos(a)) >= abs(math.sin(a)) else "width"]
-        vertical = [m for _, m, _ in rows or extra]  # height and base come from the target whenever it shows the part
+            # Generated views, each for the axis it faces, and never for an axis a target view faces.
+            facing = {"width": [(ref, m, math.cos(b)) for ref, b, m in extra if abs(math.cos(b)) > FACING],
+                      "depth": [(ref, m, math.sin(b)) for ref, b, m in extra if abs(math.sin(b)) > FACING]}
+            settled = {axis for axis, towards in (("width", math.cos), ("depth", math.sin)) if any(abs(towards(a)) > FACING for a, _ in rows)}
+            got = {axis: sum(m["width"] for _, m, _ in found) / len(found) for axis, found in facing.items() if found and axis not in settled}
+            if len(got) == 2 and rows:
+                # The target measured the part at an angle: it sets the size, the generated views only split it.
+                scale = sum(m["width"] / (abs(math.cos(a)) * got["width"] + abs(math.sin(a)) * got["depth"]) for a, m in rows) / len(rows)
+                got = {axis: value * scale for axis, value in got.items()}
+            if got:
+                width, depth = got.get("width", width), got.get("depth", depth)
+                if "width" in got:
+                    x = sum(m["cx"] * sign for _, m, sign in facing["width"]) / len(facing["width"])
+                if "depth" in got:
+                    y = sum(m["cx"] * sign for _, m, sign in facing["depth"]) / len(facing["depth"])
+                assumed = [axis for axis in ("width", "depth") if axis not in got and axis not in settled]
+                used = sorted({ref for axis in got for ref, _, _ in facing[axis]})
+        vertical = [m for _, m in rows] or [m for _, _, m in extra]
         height = sum(m["height"] for m in vertical) / len(vertical)
         z = sum(m["cy"] for m in vertical) / len(vertical)
         entry = {"id": part["id"], "centre": [round(x, 4), round(y, 4), round(z, 4)],
