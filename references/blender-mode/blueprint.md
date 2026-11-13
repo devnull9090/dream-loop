@@ -16,6 +16,7 @@ Copy [blueprint.template.json](blueprint.template.json) to `.dream-loop/blueprin
    - `boxes`: the tight box round the visible part in each view that shows it. Leave a view out when the part is hidden or mostly covered there.
    - `form`: what the shape is, in a sentence or two: main volume, taper, edges, what it must not look like.
    - `colours`: the part's main colours. Give each an `at` point (a view and an `x, y` on the target) and let the script sample it; do not type hex values by eye.
+   - `outlines` (optional): the part's silhouette in a view, as a list of `[x, y]` points round it. See "Outlines" below.
 4. **Joints.** Where parts meet (neck, shoulder, elbow, hip, knee), as a point in each view that shows it. The modeller places pivots from these.
 5. **Reference.** `reference_view` is the clearest, least foreshortened view; `reference_part` is the part other sizes are quoted against (usually the head).
 
@@ -29,6 +30,27 @@ python /path/to/dream-loop/scripts/blueprint.py overlay .dream-loop/blueprint.js
 `validate --write` lists everything that is missing or inconsistent (exit status 2). When the sheet is sound it records the target's size, samples the colours and writes the `measures` block: every part's height, width and centre in H for every view, the same sizes against the reference part (`height_ref`), and every joint position. `measures` is derived from the boxes. Never edit it; change a box and run `validate --write` again.
 
 Open `blueprint.png` and check every box against the picture before going on. A box that clips a part or includes its neighbour becomes a wrong measure that the whole loop will then enforce. Fixing the blueprint is cheap now and expensive later.
+
+## Outlines
+
+A box says how big a part is and where it sits. It says nothing about its shape: a box and an egg with the same bounds measure the same. Give a part an outline and its shape is measured too, by `inner.py`, before any critic is asked; without one, the part's form is judged only by critics, which is slower and costs far more.
+
+An outline is the part's silhouette as the target shows it in one view: `"outlines": {"side": [[x, y], ...]}`, at least three points going round the part, in the same fractions as the boxes. Trace what is visible. Where another part lies in front, follow the edge of that part.
+
+Do not place the points by eye. Have the script propose them, look, then correct:
+
+```sh
+python /path/to/dream-loop/scripts/blueprint.py outline .dream-loop/blueprint.json --part head --out .dream-loop/outlines.png
+python /path/to/dream-loop/scripts/blueprint.py outline .dream-loop/blueprint.json --part head --write
+```
+
+The proposal keeps the pixels inside the part's box that are nearer the part's sampled colours than the background or an overlapping neighbour's colours, takes the largest connected patch and traces its edge. Open `outlines.png`. If the proposal leaks into a neighbour or misses a shaded area, add a colour point on the missed area (and run `validate --write`), lower or raise `--tolerance`, or move the points by hand in the file after `--write`. A second `--write` leaves outlines that are already there alone unless you add `--replace`. `overlay` draws the stored outlines with the boxes, so check them there as well.
+
+Which parts to outline: the ones whose silhouette carries the design (a head, a shell, a clamp, a foot), in the views that show them clearly. Leave a view out when the part is mostly covered there. A part with no outline is not checked for shape and goes to the critics as before.
+
+`validate` warns when an outline does not fill its part's box in that view. One of the two is then wrong: fix it, because the box sets the size the model is held to and the outline is compared after both are scaled to the outline's own bounds.
+
+How close the model must come is set in `tolerances`: `outline_iou` (default 0.85, the share of the two shapes that must overlap) and `outline_reach` (default 0.12, the furthest either may stand out beyond the other, as a share of the part's longer side). These defaults were set on simple test shapes, not on a painted target. If a part that plainly matches keeps failing, look at its `.form.png` first: an outline traced loosely on the target fails a correct model. Correct the outline, and only then consider the tolerance.
 
 ## Starting the model from it
 

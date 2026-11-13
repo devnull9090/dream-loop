@@ -11,7 +11,9 @@ product. Captures from anywhere else must be given for every view, never for som
 
 What it does, in order:
  1. Runs the view-match and measured-layout gates on the renders. If either fails the round stops
-    there: no critic is asked while the layout is wrong.
+    there: no critic is asked while the layout is wrong. Then compares every part that has an
+    outline in the blueprint with it (form.py); a part whose shape fails is held back from the
+    critics, because the difference is already known in numbers.
  2. Checks each capture against the mask render from the same camera, when the capture's
     background can be keyed or a --capture-mask is given.
  3. Works out each part's state from the earlier rounds (open, passing, locked) and whether a
@@ -22,8 +24,9 @@ What it does, in order:
     colours, measured values, settled facts, previous directives).
  5. Writes round-N/review.json, which verdict.py reads.
 
-Prints one JSON line listing the parts to send and where each verdict goes. Exit status 1 when a
-gate fails or a locked part changed; 2 when the inputs are unusable. Requires Pillow.
+Prints one JSON line listing the parts to send and where each verdict goes, and the parts held
+back by the outline gate with what differs. Exit status 1 when a gate fails, a locked part changed
+or every part that needed a critic is held back; 2 when the inputs are unusable. Requires Pillow.
 """
 import argparse
 import hashlib
@@ -37,6 +40,7 @@ from PIL import Image, ImageChops, ImageDraw
 sys.path.insert(0, str(Path(__file__).parent))
 import blueprint as blueprints  # noqa: E402
 import compare  # noqa: E402
+import form  # noqa: E402
 import ledger  # noqa: E402
 import masks  # noqa: E402
 import measure  # noqa: E402
@@ -49,6 +53,8 @@ DRIFT = 0.06  # mean colour change (0-1) in a part's crop that counts as the par
 PAD = 0.15
 SCOPE = ("Layout is already measured and passes: judge form, then colour and material, then surface detail. "
          "The target is a design sheet; lighting and background are not part of the judgement.")
+OUTLINE_SCOPE = (" The part's silhouette has been compared with the outline traced on the target and is within tolerance in the views "
+                 "listed under outline: judge the forms inside it, and do not ask for the silhouette to change in those views.")
 GENERATED_RULE = ("generated.png was made by an image model from the approved target and accepted by the user as a reading aid. It is not the target. "
                   "Where it differs from a TARGET crop in pair.png, the TARGET crop is right. Judge the product against TARGET; use these only to "
                   "understand what TARGET shows too small or from one side. Evidence for a challenge must come from TARGET, never from these.")
@@ -191,6 +197,7 @@ def prepare(blueprint_path, round_number, renders, captures=None, capture_masks=
     layout = {"pass": not failing, "restart": measured["restart"], "failing": failing}
     if measured.get("advice"):
         layout["advice"] = measured["advice"]
+    shaped = form.check(blueprint, blueprint_path, kept, measured) if layout["pass"] else {"parts": {}, "notes": []}
 
     # 2. Captures against the mask renders, and each part's box in each capture.
     target = Image.open(blueprints.target_path(blueprint, blueprint_path)).convert("RGB")
@@ -247,10 +254,17 @@ def prepare(blueprint_path, round_number, renders, captures=None, capture_masks=
         if changed and state["state"] == "locked" and name != ASSEMBLY and name not in unlock:
             review["regressions"].append(name)
         now = "open" if changed or name in unlock else state["state"]
-        review["parts"][name] = {"state_before": state["state"], "changed": changed, "hash": hashes.get(name), "signature": own,
+        review["parts"][name] = {"state_before": state["state"], "state": now, "changed": changed, "hash": hashes.get(name), "signature": own,
                                  "boxes": {v: [round(x, 4) for x in boxes[(name, v)][1]] for v in views},
                                  "send": {"open": "critic", "passing": "confirm", "locked": None}[now]}
-    if any(review["parts"][name]["send"] == "critic" for name in part_ids):
+        outline = shaped["parts"].get(name)
+        if outline:
+            review["parts"][name]["outline"] = {"status": outline["status"], "lines": outline["lines"],
+                                                "views": {v: {k: r[k] for k in ("status", "overlap", "needs", "why") if k in r}
+                                                          for v, r in outline["views"].items()}}
+            if outline["status"] == "fail" and review["parts"][name]["send"]:
+                review["parts"][name].update(send=None, held="form")  # the difference is measured; a critic would only restate it
+    if any(review["parts"][name]["state"] == "open" for name in part_ids):
         review["parts"][ASSEMBLY]["send"] = None  # judged once every part has passed on its own
     if not layout["pass"] or review["regressions"]:
         for entry in review["parts"].values():
@@ -295,6 +309,9 @@ def prepare(blueprint_path, round_number, renders, captures=None, capture_masks=
         brief = {"part": name, "round": round_number, "subject": blueprint["subject"], "pair": "pair.png", "views": [v for v, _ in rows],
                  "form": part["form"] if part else ASSEMBLY_FORM, "colours": part["colours"] if part else [],
                  "measured": measured_values, "settled": settled, "has_previous": has_previous, "previous_directives": directives, "scope": SCOPE}
+        passed = {v: {"overlap": r["overlap"], "needs": r["needs"]} for v, r in entry.get("outline", {}).get("views", {}).items() if r["status"] == "pass"}
+        if passed:
+            brief.update(outline=passed, scope=SCOPE + OUTLINE_SCOPE)
         # Generated references the user has approved: a part's own close-ups, or the extra views for the assembly.
         generated = refgen.approved(blueprint, blueprint_path, part=name) if part else refgen.approved(blueprint, blueprint_path, kind="view")
         if generated:
@@ -307,7 +324,9 @@ def prepare(blueprint_path, round_number, renders, captures=None, capture_masks=
                      "verdict": (base / "verdicts" / f"{name}{suffix}.json").as_posix()})
 
     (base / "review.json").write_text(json.dumps(review, indent=1) + "\n", encoding="utf-8")
+    held = [name for name, entry in review["parts"].items() if entry.get("held") == "form"]
     return {"round": round_number, "layout": layout["pass"], "failing": layout["failing"], "restart": layout["restart"], "send": send,
+            "held": held, "form_failing": [line for name in held for line in review["parts"][name]["outline"]["lines"]], "notes": shaped["notes"],
             "locked": [n for n, e in review["parts"].items() if e["state_before"] == "locked" and not e["changed"] and n not in unlock],
             "regressions": review["regressions"], "warnings": warnings}
 
@@ -338,7 +357,7 @@ def main(argv=None):
         print(error, file=sys.stderr)
         return 2
     print(json.dumps(result, separators=(",", ":")))
-    return 0 if result["layout"] and not result["regressions"] else 1
+    return 0 if result["layout"] and not result["regressions"] and (result["send"] or not result["held"]) else 1
 
 
 if __name__ == "__main__":

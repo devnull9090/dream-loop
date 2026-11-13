@@ -19,6 +19,7 @@ When the folder holds round-N/ folders with a review.json (written by parts.py p
 3D mode), the verdicts are per part and the decision covers all of them:
 
   layout     the measured layout fails; fix it in the inner loop, no critic is needed
+  form       no part could be sent: each fails its outline; fix the shapes in the inner loop
   restart    the measured layout is far out; rebuild from the blueprint's blockout
   continue / revert / rethink / confirm / done / ask_user as above, with the parts each applies to
 
@@ -226,7 +227,8 @@ def replay_parts(folder, pass_score=8, upto=None, strict=True):
         base = folder / f"round-{n}"
         review = load_json(base / "review.json")
         latest = strict and n == numbers[-1]
-        outcome = {"round": n, "layout": review["layout"], "regressions": list(review.get("regressions", [])), "parts": {}, "disputes": []}
+        outcome = {"round": n, "layout": review["layout"], "regressions": list(review.get("regressions", [])), "parts": {}, "disputes": [],
+                   "held": {part: entry["outline"]["lines"] for part, entry in review["parts"].items() if entry.get("held") == "form"}}
         for part, entry in review["parts"].items():
             state = states.setdefault(part, {"state": "open", "track": Track(PART_GATES, PART_RANGES), "reviews": 0})
             if part in review.get("unlocked", {}) or entry.get("changed"):
@@ -303,12 +305,18 @@ def decide_parts(folder, pass_score=8, max_rounds=10):
         decision, why = "confirm", "passed by one critic, needs a second: " + ", ".join(by["confirm"])
     elif all(state["state"] == "locked" for state in states.values()):
         decision, why = "done", "every part is locked and every view was judged"
+    elif last["held"] and not any(last["parts"].values()):
+        decision, why = "form", ("no critic was asked: the outline gate fails for " + ", ".join(last["held"])
+                                 + "; fix those shapes in the inner loop (inner.py lists what differs)")
     else:
         decision, why = "continue", "parts still open: " + ", ".join(p for p, state in states.items() if state["state"] == "open")
-    if decision in ("continue", "revert", "rethink", "layout", "restart") and max_rounds and last["round"] >= max_rounds:
+    if decision in ("continue", "revert", "rethink", "layout", "restart", "form") and max_rounds and last["round"] >= max_rounds:
         decision, why = "ask_user", f"{last['round']} rounds used; last decision was {decision}: {why}"
-    return {"round": last["round"], "decision": decision, "why": why, "act_on": act_on, "confirm": by.get("confirm", []),
-            "parts": parts, "disputes": last["disputes"], "regressions": len(last["regressions"])}
+    result = {"round": last["round"], "decision": decision, "why": why, "act_on": act_on, "confirm": by.get("confirm", []),
+              "parts": parts, "disputes": last["disputes"], "regressions": len(last["regressions"])}
+    if last["held"]:
+        result["held"] = last["held"]  # parts kept from the critics by the outline gate, with what differs
+    return result
 
 
 def main(argv=None):

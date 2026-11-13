@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The 3D mode's inner loop: render, view-match and measure in one command, with no critic.
+"""The 3D mode's inner loop: render, view-match, measure and compare outlines in one command, with no critic.
 
   python inner.py --blueprint .dream-loop/blueprint.json --blend model.blend            (headless)
   python inner.py --blueprint .dream-loop/blueprint.json --setup build_model.py         (headless, model built by a script)
@@ -11,11 +11,14 @@ Run it after every change to the model. It takes seconds:
  2. renders every view's ID mask and a quick picture at those cameras;
  3. scores each view's silhouette against the target (viewmatch.py);
  4. measures every part against the blueprint (measure.py) and writes <view>.side.png,
-    target beside product with the part boxes drawn.
+    target beside product with the part boxes drawn;
+ 5. compares every part that has an outline in the blueprint with that outline (form.py) and
+    writes <part>.form.png, where the two shapes differ.
 
 Prints one JSON line: "stage" says where the model stands (blockout until the silhouettes
-match, proportion until every measure passes, then outer: ready for a product capture and
-critics), "failing" lists each measure as target and current value. Exit status 0 only at outer.
+match, proportion until every measure passes, form until every outlined part's shape matches
+its outline, then outer: ready for a product capture and critics), "failing" lists each measure
+as target and current value. Exit status 0 only at outer.
 """
 import argparse
 import json
@@ -26,6 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import blender_run  # noqa: E402
 import blueprint as blueprints  # noqa: E402
+import form  # noqa: E402
 import measure  # noqa: E402
 import viewmatch  # noqa: E402
 
@@ -50,14 +54,21 @@ def inner(args):
                                 "long_edge": args.long_edge, "beauty": args.beauty}, args)
     matched = viewmatch.check(blueprint, args.blueprint, out, cameras=cameras)
     measured = measure.measure(blueprint, args.blueprint, out)
-    stage = "blockout" if not matched["pass"] else "proportion" if not measured["pass"] else "outer"
+    shaped = form.check(blueprint, args.blueprint, out, measured)
+    stage = "blockout" if not matched["pass"] else "proportion" if not measured["pass"] else "form" if not shaped["pass"] else "outer"
     result = {
         "stage": stage, "pass": stage == "outer",
         "viewmatch": [{k: v[k] for k in ("view", "method", "score", "threshold", "pass") if k in v} for v in matched["views"]],
-        "failing": [f"view {v['view']}: {v['why']}" for v in matched["views"] if not v["pass"]] + measured["failing"],
+        # Outline differences are listed once the layout passes: a shape is not worth reading on a part of the wrong size.
+        "failing": [f"view {v['view']}: {v['why']}" for v in matched["views"] if not v["pass"]] + measured["failing"]
+                   + (shaped["failing"] if stage == "form" else []),
         "restart": measured["restart"], "parts": {name: part["status"] for name, part in measured["parts"].items()},
-        "sheets": measured["sheets"], "renders": out.as_posix(), "seconds": round(time.time() - started, 1),
+        "sheets": measured["sheets"] + shaped["sheets"], "renders": out.as_posix(), "seconds": round(time.time() - started, 1),
     }
+    if shaped["parts"]:
+        result["form"] = form.summary(shaped)
+    if shaped["notes"]:
+        result["notes"] = shaped["notes"]
     if measured.get("advice"):
         result["advice"] = measured["advice"]
     if solved:
