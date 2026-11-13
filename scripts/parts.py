@@ -22,7 +22,10 @@ What it does, in order:
     A locked part that changed is a regression unless it is named in --unlock.
  4. For every part that needs a critic, writes round-N/parts/<part>/pair.png (target, current and
     previous crop for each view, cut from the part's own bounds) and brief.json (form notes,
-    colours, measured values, settled facts, previous directives).
+    colours, measured values, settled facts, previous directives). Each colour carries the
+    target's value at the blueprint's point and the capture's value at the same place on the
+    part, sampled here, so that critics compare one pair of numbers instead of each picking a
+    different pixel of a lit painting.
  5. Writes round-N/review.json, which verdict.py reads.
 
 A part the blueprint marks same_as another (a right leg, same_as the left) is sent to the same
@@ -42,6 +45,7 @@ or every part that needed a critic is held back; 2 when the inputs are unusable.
 import argparse
 import hashlib
 import json
+import math
 import shutil
 import sys
 from pathlib import Path
@@ -66,6 +70,11 @@ SMALL = 256  # a part with fewer pixels than this on its longer side in a captur
 CELL = 448  # when one sheet of every view would show the crops narrower than this, each view also gets a sheet of its own
 SCOPE = ("Layout is already measured and passes: judge form, then colour and material, then surface detail. "
          "The target is a design sheet; lighting and background are not part of the judgement.")
+COLOUR_RULE = ("For each colour, hex is the target sampled by the script at the blueprint's point and capture is the product sampled at the "
+               "same place on the part; difference compares the two. Judge colour from these pairs and quote them in directives. Do not "
+               "take colour values from the crops by eye: a painted target is lit, and two points on one surface of it differ by more "
+               "than a correct product differs from it.")
+SEARCH = 0.03  # a colour point that misses the part in the capture is looked for this share of the box further out, ring by ring
 TWIN_RULE = ("{others} {verb} the same geometry as {part} in the model ({how}), measured, so this one verdict covers {all}. "
              "The rows labelled with another part's name show that part in its own views: read them as further views of the same design. "
              "Every directive you give is applied to all of them, so give each once, and do not ask for one side to differ from the other.")
@@ -116,6 +125,49 @@ def capture_alignment(capture, mask, render_subject, need):
     iou = masks.area(ImageChops.darker(mask, render)) / union if union else 0.0
     info = {"method": "mask", "capture_iou": round(iou, 3), "pass": iou >= need}
     return masks.fraction_box(mask), info
+
+
+def lab(rgb):
+    """An sRGB colour (0-255 per channel) in CIE L*a*b* under D65."""
+    linear = [(v / 255 / 12.92) if v / 255 <= 0.04045 else ((v / 255 + 0.055) / 1.055) ** 2.4 for v in rgb]
+    xyz = [sum(m * c for m, c in zip(row, linear)) / white for row, white in (
+        ((0.4124564, 0.3575761, 0.1804375), 0.95047), ((0.2126729, 0.7151522, 0.0721750), 1.0), ((0.0193339, 0.1191920, 0.9503041), 1.08883))]
+    f = [v ** (1 / 3) if v > 0.008856 else 7.787 * v + 16 / 116 for v in xyz]
+    return 116 * f[1] - 16, 500 * (f[0] - f[1]), 200 * (f[1] - f[2])
+
+
+def colour_difference(target_hex, capture_hex):
+    """How the capture's colour differs from the target's: lightness and chroma (L*a*b* units), hue (degrees) and delta E (CIE76)."""
+    a, b = (lab([int(value[i:i + 2], 16) for i in (1, 3, 5)]) for value in (target_hex, capture_hex))
+    chroma = [math.hypot(c[1], c[2]) for c in (a, b)]
+    out = {"lightness": round(b[0] - a[0], 1), "chroma": round(chroma[1] - chroma[0], 1), "delta_e": round(math.dist(a, b), 1)}
+    if min(chroma) > 6:  # hue means nothing for a grey
+        turn = math.degrees(math.atan2(b[2], b[1]) - math.atan2(a[2], a[1]))
+        out["hue"] = round((turn + 180) % 360 - 180)
+    words = [f"{abs(out['lightness'])} L* {'darker' if out['lightness'] < 0 else 'lighter'}" if abs(out["lightness"]) >= 2 else None,
+             f"chroma {abs(out['chroma'])} {'lower' if out['chroma'] < 0 else 'higher'}" if abs(out["chroma"]) >= 2 else None,
+             f"hue {abs(out['hue'])} degrees off" if abs(out.get("hue", 0)) >= 4 else None]
+    out["reads"] = f"capture is {', '.join(w for w in words if w) or 'the same'} (delta E {out['delta_e']})"
+    return out
+
+
+def sample_on_part(capture, capture_box, mask, mask_box, point):
+    """The capture's colour at a point given as fractions of the part's box, taken from the part's own pixels.
+
+    capture_box and mask_box are the part's box in the capture and in the mask render. When the
+    point misses the part there (the shapes differ a little), the nearest place on it is used.
+    Returns "#rrggbb", or None when nothing of the part is near."""
+    for ring in range(9):
+        for dx, dy in ([(0, 0)] if not ring else [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, 1), (1, -1), (-1, -1)]):
+            u, v = point[0] + dx * ring * SEARCH, point[1] + dy * ring * SEARCH
+            if not (0 <= u <= 1 and 0 <= v <= 1):
+                continue
+            mx, my = (mask_box[0] + u * mask_box[2]) * mask.width, (mask_box[1] + v * mask_box[3]) * mask.height
+            if mask.getpixel((min(mask.width - 1, int(mx)), min(mask.height - 1, int(my)))):
+                x, y = round((capture_box[0] + u * capture_box[2]) * (capture.width - 1)), round((capture_box[1] + v * capture_box[3]) * (capture.height - 1))
+                patch = capture.crop((max(0, x - 2), max(0, y - 2), min(capture.width, x + 3), min(capture.height, y + 3)))
+                return "#%02x%02x%02x" % tuple(sorted(compare.pixels(band))[len(compare.pixels(band)) // 2] for band in patch.split())
+    return None
 
 
 def into(box, source, destination):
@@ -222,7 +274,7 @@ def prepare(blueprint_path, round_number, renders, captures=None, capture_masks=
 
     # 2. Captures against the mask renders, and each part's box in each capture.
     target = Image.open(blueprints.target_path(blueprint, blueprint_path)).convert("RGB")
-    warnings, boxes, crops, signatures, view_hashes, small, twin_info = [], {}, {}, {}, {}, {}, {}
+    warnings, boxes, crops, signatures, view_hashes, small, twin_info, seen = [], {}, {}, {}, {}, {}, {}, {}
     for view in blueprint["views"]:
         vid = view["id"]
         data, part_masks, subject = masks.read_ids(kept / f"{vid}.ids.json")
@@ -253,6 +305,7 @@ def prepare(blueprint_path, round_number, renders, captures=None, capture_masks=
             box = masks.fraction_box(part_masks[part["id"]]) if part["id"] in part_masks else None
             if vid in part["boxes"] and box and status in ("pass", "fail"):
                 boxes[(part["id"], vid)] = (part["boxes"][vid], into(box, render_subject, capture_subject))
+                seen[(part["id"], vid)] = (capture, part_masks[part["id"]], box)
                 shown = max(boxes[(part["id"], vid)][1][2] * capture.width, boxes[(part["id"], vid)][1][3] * capture.height)
                 if shown < SMALL:
                     small.setdefault(vid, []).append((shown, part["id"]))
@@ -373,9 +426,29 @@ def prepare(blueprint_path, round_number, renders, captures=None, capture_masks=
             if act_on and entry["send"] == "critic" and (rounds / act_on).exists():
                 old_verdict = verdict.load(rounds / act_on)
                 directives += [{"id": item["id"], "change": item["change"]} for key in ("blockers", "next") for item in old_verdict.get(key, [])]
+        colours = []
+        own = next((p for p in blueprint["parts"] if p["id"] == name), {})
+        for colour in part["colours"] if part else []:
+            colour, at = dict(colour), colour.get("at")
+            # The point lies on the part that carries the colours; a same_as part is sampled at that place on itself, or its mirror image.
+            owner = name if own.get("colours") else own.get("same_as")
+            box = next((p["boxes"].get(at["view"]) for p in blueprint["parts"] if p["id"] == owner), None) if at else None
+            if box and (name, at["view"]) in seen and colour.get("hex"):
+                u, v = (at["point"][0] - box[0]) / box[2], (at["point"][1] - box[1]) / box[3]
+                capture, mask, mask_box = seen[(name, at["view"])]
+                for point in [(u, v)] + ([(1 - u, v)] if owner != name else []):
+                    found = sample_on_part(capture, boxes[(name, at["view"])][1], mask, mask_box, point) if 0 <= u <= 1 and 0 <= v <= 1 else None
+                    if found:
+                        colour.update(capture=found, difference=colour_difference(colour["hex"], found))
+                        break
+            colours.append(colour)
         brief = {"part": name, "round": round_number, "subject": blueprint["subject"], "pair": "pair.png", "pairs": pairs, "views": views[name],
-                 "form": part["form"] if part else ASSEMBLY_FORM, "colours": part["colours"] if part else [],
+                 "form": part["form"] if part else ASSEMBLY_FORM, "colours": colours,
                  "measured": measured_values[name], "settled": settled, "has_previous": has_previous, "previous_directives": directives, "scope": SCOPE}
+        if any("capture" in colour for colour in colours):
+            brief["colour_rule"] = COLOUR_RULE
+        if own.get("same_as") and not entry.get("shares") and review["parts"].get(own["same_as"], {}).get("send"):
+            entry["same_as"] = own["same_as"]  # judged apart from the part it should match: verdict.py compares the two verdicts
         if len(members) > 1:
             others = members[1:]
             how = "mirrored left to right" if entry["twin"] == "mirror" else "copied"

@@ -33,6 +33,11 @@ it had; "scope" in the output says which parts the round covered.
 A part that shared its critic with another (a mirrored pair, see parts.py) has no verdict file
 of its own: the verdict saved for the part it was sent with is applied to it as well.
 
+"reversals" lists directives in this round that ask for the opposite of one in the verdict the
+builder last acted on for the same place on the same part, and directives for a same_as part
+that oppose its counterpart's in the same round. It is a flag, never a rule break: settle the
+point (ledger.py add, with a key and value) before acting on either, or the model oscillates.
+
 No dependencies.
 """
 import argparse
@@ -54,6 +59,16 @@ DIMENSION = re.compile(r"\b(shorten|lengthen|enlarge|shrink|widen|narrow(er)?|th
                        r"thinner|thicker|scale|resize|height|width|length|depth|thickness|diameter|radius|size)\b", re.I)
 RELATIVE = re.compile(r"(\d\s*%|\b\d+(\.\d+)?\s*(x|times)\b|\bx\s*\d|\b(half|twice|double|triple|a third|a quarter|two thirds)\b)", re.I)
 ABSOLUTE = re.compile(r"\d\s*(H|cm|mm|m)\b")
+# Reversals. A directive that states a size gives its target and the current value; the direction is the sign between them.
+STATED = re.compile(r"(\d+(?:\.\d+)?)\s*H\b[^.;]*?\bcurrently\s*(\d+(?:\.\d+)?)\s*H\b", re.I)
+# Words that pull one quality in opposite directions. Comparatives and verbs only: "lower" and "smooth" are too often plain adjectives.
+OPPOSITES = [({"wider", "widen", "broader", "broaden"}, {"narrower", "slimmer"}), ({"thicker", "thicken", "fatter"}, {"thinner"}),
+             ({"larger", "bigger", "enlarge"}, {"smaller", "shrink"}), ({"longer", "lengthen", "taller"}, {"shorter", "shorten"}),
+             ({"increase"}, {"decrease", "reduce"}), ({"darker", "darken"}, {"lighter", "lighten", "brighter", "brighten"}),
+             ({"rougher", "roughen"}, {"smoother", "glossier"}), ({"sharper", "sharpen", "crisper"}, {"softer", "soften", "blunter"}),
+             ({"add"}, {"remove"}), ({"deeper", "deepen"}, {"shallower", "flatten", "flatter"}), ({"warmer"}, {"cooler"}),
+             ({"forward", "forwards"}, {"backward", "backwards", "rearward"})]
+FILLER = {"and", "the", "of", "in", "on", "at", "a", "an", "to", "view", "views", "part", "its", "from", "with"}
 
 
 def load(path):
@@ -214,6 +229,54 @@ def part_problems(verdict, part, brief):
     return found
 
 
+def words(text):
+    return set(re.findall(r"[a-z0-9_]+", str(text).lower())) - FILLER
+
+
+def same_place(a, b):
+    """Whether two directives' "where" name the same place: most of the shorter one's words are in the other."""
+    a, b = words(a), words(b)
+    return bool(a and b) and len(a & b) >= max(1, 0.6 * min(len(a), len(b)))
+
+
+def opposed(old, new):
+    """Why directive `new` asks for the opposite of directive `old`, or None. Both are blocker or next items.
+
+    Sizes stated with their current value are compared as numbers; anything else by its wording,
+    which is a guess and is labelled as one."""
+    if new.get("reverses") and new["reverses"] == old.get("id"):
+        return "the critic says it reverses that directive"
+    place = (old.get("measure") and old.get("measure") == new.get("measure")) or same_place(old.get("where", ""), new.get("where", ""))
+    if not place:
+        return None
+    was, now = STATED.search(str(old.get("change", ""))), STATED.search(str(new.get("change", "")))
+    if was and now:
+        (old_target, old_current), (target, current) = ([float(v) for v in match.groups()] for match in (was, now))
+        opposite = (old_target - old_current) * (target - current) < 0
+        if opposite and abs(target - old_target) > max(0.01, 0.05 * old_target):
+            return f"it asked for {old_target:g} H from {old_current:g} H; this asks for {target:g} H from {current:g} H"
+        return None
+    old_words, new_words = words(old.get("change", "")), words(new.get("change", ""))
+    for a, b in OPPOSITES:
+        for first, second in ((a, b), (b, a)):
+            if old_words & first and new_words & second and not old_words & second and not new_words & first:
+                return (f"by its wording (\"{sorted(old_words & first)[0]}\" then \"{sorted(new_words & second)[0]}\"); "
+                        "read both before acting")
+    return None
+
+
+def reversals(part, verdict, before, source):
+    """Directives in a verdict that oppose one in an earlier (or a counterpart's) verdict. source names that verdict."""
+    found = []
+    for new in [item for key in ("blockers", "next") for item in verdict.get(key, [])]:
+        for old in [item for key in ("blockers", "next") for item in before.get(key, []) if isinstance(item, dict)]:
+            why = opposed(old, new)
+            if why:
+                found.append({"part": part, "id": new["id"], "where": new["where"], "against": old.get("id"), "in": source, "why": why})
+                break
+    return found
+
+
 def load_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
@@ -236,7 +299,8 @@ def replay_parts(folder, pass_score=8, upto=None, strict=True):
         latest = strict and n == numbers[-1]
         outcome = {"round": n, "layout": review["layout"], "regressions": list(review.get("regressions", [])), "parts": {}, "disputes": [],
                    "held": {part: entry["outline"]["lines"] for part, entry in review["parts"].items() if entry.get("held") == "form"},
-                   "scope": review.get("scope")}
+                   "scope": review.get("scope"), "reversals": []}
+        judged_now = {}
         for part, entry in review["parts"].items():
             state = states.setdefault(part, {"state": "open", "track": Track(PART_GATES, PART_RANGES), "reviews": 0})
             if part in review.get("unlocked", {}) or entry.get("changed"):
@@ -267,6 +331,13 @@ def replay_parts(folder, pass_score=8, upto=None, strict=True):
                     if latest and line not in outcome.setdefault("problems", []):
                         outcome["problems"].append(line)
                     break
+                before = state.get("act_on")  # what the builder last acted on for this part
+                if judged == part and before and before != f"round-{n}/verdicts/{name}" and (folder / before).exists():
+                    try:
+                        outcome["reversals"] += [r for r in reversals(part, verdict, load(folder / before), before) if r not in outcome["reversals"]]
+                    except ValueError:
+                        pass
+                judged_now[part] = (verdict, f"round-{n}/verdicts/{name}")
                 if judged == part:
                     outcome["disputes"] += [{"part": part, "id": item["id"], "measure": item["measure"], "evidence": item["evidence"]}
                                             for key in ("blockers", "next") for item in verdict[key] if item.get("measure") and item.get("evidence")]
@@ -284,6 +355,10 @@ def replay_parts(folder, pass_score=8, upto=None, strict=True):
                     state.update(state="open", decision="continue", why=f"the second critic scored it {verdict['score']}",
                                  score=verdict["score"], gate=verdict["first_failed_gate"], act_on=f"round-{n}/verdicts/{name}")
             outcome["parts"][part] = state.get("decision")
+        for part, entry in review["parts"].items():  # a same_as part judged apart from its counterpart: do the two critics agree?
+            other = entry.get("same_as")
+            if other in judged_now and part in judged_now:
+                outcome["reversals"] += reversals(part, judged_now[part][0], judged_now[other][0], judged_now[other][1])
         rounds.append(outcome)
     return states, rounds
 
@@ -336,6 +411,8 @@ def decide_parts(folder, pass_score=8, max_rounds=10):
         result["held"] = last["held"]  # parts kept from the critics by the outline gate, with what differs
     if scope:
         result["scope"] = scope
+    if last["reversals"]:
+        result["reversals"] = last["reversals"]  # settle each in the ledger before acting on either side
     return result
 
 

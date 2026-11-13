@@ -9,7 +9,7 @@ A folder for this part:
 - `pair.png`: one row for each view of the part. Each row has the TARGET crop, the CURRENT crop of the product, and the PREVIOUS crop when the part was reviewed before. The crops are cut from the part's own bounds, so the part fills each one.
 - `brief.json`:
   - `pairs`: the picture sheets to read. Usually just `pair.png`. When the part is tall or has many views, one sheet would draw the crops too small, so each view also has its own sheet (`pair-side.png`, ...) and `pairs` lists those: read every one of them, and treat them as you would the rows of `pair.png`.
-  - `form` and `colours`: what the blueprint says this part is, with colours sampled from the target.
+  - `form` and `colours`: what the blueprint says this part is. Each colour has `hex`, sampled by a script from the target at a fixed point, and usually `capture`, sampled by the same script from the product at the same place on the part, with `difference` between the two. See "Colour".
   - `measured`: the part's height, width and centre in each view as ratios of subject height **H**, target and current. These were measured from mask renders and are within tolerance.
   - `outline`: present when the part's silhouette was compared with an outline traced on the target; it lists the views where the two agree within tolerance.
   - `settled`: facts already agreed. Treat them as constraints.
@@ -66,6 +66,17 @@ The score is out of 10 and is fixed by the first gate that fails:
 
 Within the range, score low when that gate has several large differences and high when one small one remains. Never score above the range. Every view in `pair.png` counts: the part's score is set by its worst view.
 
+## Colour
+
+Do not take colour values from the crops yourself. A painted target is lit: three samples from one cream surface can differ by a fifth of the range, and a directive built on any one of them sends the builder after a colour the design never had.
+
+For each entry in `colours`, `hex` is the target and `capture` is the product at the same point, both sampled by the script. `difference` gives the product's lightness and chroma against the target's in L\*a\*b\* units, the hue apart in degrees, and delta E. Judge the colour of that surface from this pair:
+
+- A delta E under about 6 with no hue difference is the same colour for this purpose; do not fail the gate on it.
+- When you ask for a colour change, quote the pair: "shell is #c9ad8f in the capture against the target's #e4cbb1: 9 L\* darker; raise the base colour's value". Never quote a target colour that is not a `hex` in `colours`.
+- The capture is lit too. If the pair differs only in lightness and the crop shows the surface in shadow, say so under `unverifiable` instead of asking for a lighter material.
+- A surface with no entry in `colours`, or an entry with no `capture`, you judge by eye as a relation ("the rim reads greener than the plate; in the target they match"), not as a hex value.
+
 ## Calibration
 
 - Find differences before you score. If you have written a difference under a gate, that gate has failed.
@@ -84,6 +95,8 @@ Any directive about a size inside the part (an eye, a plate, the thickness of a 
 A relative change overshoots, because the next critic estimates the current size differently. Directives worded that way are sent back.
 
 ## Previous round
+
+Before you ask for the opposite of a previous directive, look at PREVIOUS again: if the builder overshot, ask for the same target with the new current value, which is not a reversal. If the earlier directive was wrong, mark yours with `reverses`.
 
 When a PREVIOUS crop is present, judge it with the same eyes and give the score you would give it now as `previous_score`. List under `regressions` everything in this part that is further from the target in CURRENT than in PREVIOUS; an empty list means you looked and found none. Mark each previous directive `landed`, `partial` or `not_done`, and carry forward the ones that are not landed unless they are no longer the right fix.
 
@@ -118,6 +131,7 @@ Reply with one JSON object and nothing else:
 - `first_failed_gate`: `form`, `colour_material`, `surface_detail` or `null`.
 - `previous_score` and `regressions`: required when `brief.json` has `"has_previous": true`.
 - `blockers`: what fails the first failed gate, largest first, at most 5. `next`: at most 3 differences from later gates.
+- `reverses`: optional, on a blocker or next item. If you are asking for the opposite of a directive in `previous_directives` (it asked for narrower, you ask for wider), set this to that directive's id and make sure `target` says what on the TARGET crop shows it. The builder followed that directive; without this it cannot tell a correction from a difference of opinion.
 - Ids are `r<round>-<part>-b<n>` for blockers and `r<round>-<part>-n<n>` for next.
 - `where` names the view and the place on the part. Every item says what the target shows, what the product shows, and a change concrete enough to act on, with absolute values.
 - `target_unclear`: optional. What the target shows too small or too unclear to judge, each starting with the gate it affects. Different from `unverifiable`, which is what no still could show.
