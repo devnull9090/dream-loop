@@ -38,6 +38,8 @@ python /path/to/dream-loop/scripts/blueprint.py blockout .dream-loop/blueprint.j
 
 This writes one primitive per part: centre and size in H, with x across a front view, y away from a front camera and z up from the subject's base. It combines every view of the reference pose. A part seen from one direction only has its other extent assumed equal and is listed under `assumed`; check those against the target first.
 
+If many parts are `assumed`, the target does not show enough directions. The user can have the missing views generated from the target: see [generated-references.md](generated-references.md). Those are reading aids. Do not add a generated image as a view here or draw the blueprint's boxes on one: every view and box in the blueprint is on the approved target.
+
 ## Changing it
 
 The blueprint changes only when the target does, or when a box turns out to be wrong. Say so to the user when it happens, rerun `validate --write`, and treat everything measured before the change as unmeasured.

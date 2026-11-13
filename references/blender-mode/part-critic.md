@@ -13,6 +13,7 @@ A folder for this part:
   - `settled`: facts already agreed. Treat them as constraints.
   - `previous_directives`: what the last critic of this part asked for.
   - `scope`: what is outside the judgement.
+- Sometimes `generated.png`, with a `generated` entry in `brief.json`: extra pictures of this part made by an image model from the target. See "Generated references" before using them.
 
 Read both before judging. You are not given, and should not ask for, the rest of the subject: other parts have their own critics.
 
@@ -22,7 +23,18 @@ When the part is `assembly`, the crops show the whole subject and every part has
 
 The part's size and position are measured, not judged. Do not estimate proportions from the picture and do not ask for the part as a whole to be made larger, smaller, longer or shorter: the numbers in `measured` say it is the right size.
 
-If you are sure a value in `measured` or `settled` is wrong, because the target crop plainly shows something else, you may challenge it: give the directive a `measure` (the fact's `key`), a `target_value`, and an `evidence` sentence saying what in the target shows it. A challenge without evidence is rejected. Expect it to be checked against the blueprint, not acted on directly.
+If you are sure a value in `measured` or `settled` is wrong, because the target crop plainly shows something else, you may challenge it: give the directive a `measure` (the fact's `key`), a `target_value`, and an `evidence` sentence saying what in the target shows it. A challenge without evidence is rejected, and the evidence must be something visible in a TARGET crop, never in a generated reference. Expect it to be checked against the blueprint, not acted on directly.
+
+## Generated references
+
+The target is often one drawing, and a part can be small on it or seen from one side only. When the user has had an image model make a larger or turned picture of this part from the target, and has looked at it and accepted it, it is in `generated.png`, each panel labelled GENERATED.
+
+- They are a reading aid, not the target. An image model can add a toe, round off a facet or invent a seam, and the user's approval means "close enough to help", not "correct in every detail".
+- Judge the product against the TARGET crops in `pair.png`. Where a generated picture and a TARGET crop disagree about anything (a count, a shape, a colour, a marking), the TARGET crop is right, and you say nothing about the generated picture's version.
+- Use them for what TARGET cannot show: what a feature is when it is a few pixels across there, and how the visible design plausibly continues round a side TARGET hides. A directive that rests only on a generated picture says so in its `target` field ("generated reference part-head-1 shows ...") and goes under `next`, not `blockers`: it cannot fail a gate on its own.
+- Never score the product against a generated picture, and never list a difference from one as a regression.
+
+If the TARGET crop is too small or too unclear to judge a gate, and no generated picture settles it, do not guess. Judge what you can, and list what you could not under `target_unclear`, one sentence each, starting with the gate: "form: the toes are four pixels wide in every view; their number and shape cannot be read". The user is then offered a close-up of this part.
 
 ## Gates
 
@@ -86,7 +98,8 @@ Reply with one JSON object and nothing else:
     }
   ],
   "next": [],
-  "unverifiable": ["inside of the jaw: closed in every view"]
+  "unverifiable": ["inside of the jaw: closed in every view"],
+  "target_unclear": []
 }
 ```
 
@@ -96,5 +109,6 @@ Reply with one JSON object and nothing else:
 - `blockers`: what fails the first failed gate, largest first, at most 5. `next`: at most 3 differences from later gates.
 - Ids are `r<round>-<part>-b<n>` for blockers and `r<round>-<part>-n<n>` for next.
 - `where` names the view and the place on the part. Every item says what the target shows, what the product shows, and a change concrete enough to act on, with absolute values.
+- `target_unclear`: optional. What the target shows too small or too unclear to judge, each starting with the gate it affects. Different from `unverifiable`, which is what no still could show.
 - Keep every string to one sentence.
 - If the part needs remodelling from its primitive rather than adjusting, say that instead of listing symptoms.

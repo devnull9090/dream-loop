@@ -1,0 +1,116 @@
+# Generated references
+
+One approved image is often not enough to model from. A single three-quarter view gives the blockout no depth and hides the far arm and the far foot. A part that is 60 pixels across on the board cannot be judged: critics guess at its toes and reverse each other from round to round.
+
+`refgen.py` asks an image model for what is missing, using the approved design as the input image:
+
+- **another view** of the same subject: front, back, left, right, top or a three-quarter;
+- **a close-up** of one part, from the design's own angle or from one of those views.
+
+This step is optional, costs money, and is the user's decision each time. Offer it; do not run it unasked.
+
+## The rule
+
+A generated image is supplementary evidence. It is never the target.
+
+- The approved design stays the authority. Measures come from the blueprint's boxes on the approved design, and the view-match and layout gates never look at a generated image.
+- Nothing generated is used until the user has looked at it and accepted it. `refgen.py approve` records that; until then every other script ignores the image.
+- Where a generated image and the approved design disagree, the approved design is right. A critic is told which images are generated and told this.
+- If the approved design changes, or a generated file is edited, its approval lapses.
+
+## When to offer it
+
+| When | What | Why |
+|---|---|---|
+| After the blueprint validates, before the blockout | The orthographic views the board lacks | `blueprint.py blockout` lists parts seen from one direction only under `assumed`: their depth is a guess, and parts on the far side have no box at all |
+| In the outer loop, when a part's verdict lists `target_unclear` | A close-up of that part | The critic could not read the part on the approved design |
+| When `verdict.py` says `rethink` or `ask_user` for a part | A close-up of that part, perhaps also from a second view | Two reviews without progress often mean the builder and the critic are reading a small target differently |
+
+`plan` with no `--view` or `--part` works this out and prints what it would propose and why:
+
+```sh
+python SCRIPTS/refgen.py plan --blueprint .dream-loop/blueprint.json
+```
+
+Tell the user what it suggests, what each image is for and what the batch is estimated to cost, and ask which they want. Do not offer it when nothing is listed.
+
+## Choosing the provider and model
+
+The choice lives in `.dream-loop/config.json` and is the user's. Ask which provider and model they want the first time; do not pick silently.
+
+```sh
+python SCRIPTS/refgen.py config --root .dream-loop --provider openai --model gpt-image-2.6-sunburst --quality high
+python SCRIPTS/refgen.py config --root .dream-loop        # shows the settings, the models known for the provider, and whether a key is stored
+```
+
+| Provider | Models | Notes |
+|---|---|---|
+| `openai` | `gpt-image-2.6-sunburst` (default: detail and precise edits), `gpt-image-2.6-flare` (faster drafts), or any other id the Images API accepts | Uses `POST /v1/images/edits` with the design as input. "gpt-image-2.6" alone is not a model id; it is read as `gpt-image-2.6-sunburst` |
+| `fake` | `fake-1` | No service and no cost: returns the input, stamped FAKE. For trying the steps. Its images cannot be approved |
+
+`config.json` holds a `generation` block. Besides `provider`, `model`, `quality` and `size` (`auto` picks portrait, landscape or square from the subject's shape), it may set `max_batch` (4), `max_cost_usd` (2.00), `timeout`, `background`, `pricing` (USD per million tokens, when the built-in rates are out of date) and `params`: any other field the provider's API accepts, passed through as written, for example `{"complexity": "high"}`. The same settings can be given as flags for one run.
+
+The OpenAI contract was read from the [image edit reference](https://developers.openai.com/api/reference/resources/images/methods/edit) and the [image generation guide](https://developers.openai.com/api/docs/guides/image-generation) on 2026-11-12. Recheck them when a real error suggests the contract changed. A second provider is one new class in `refgen.py`.
+
+## The API key
+
+The user stores the key themselves, in their own terminal:
+
+```sh
+python SCRIPTS/refgen.py key --root .dream-loop --provider openai
+```
+
+It asks for the key without showing it and writes it to `.dream-loop/secrets.env`. It refuses if git could commit that file (add `.dream-loop/` to `.gitignore` first) and refuses if the terminal cannot hide what is typed. `OPENAI_API_KEY` in the environment is used in preference when it is set. `key --check` says whether a key is available and where from; `key --remove` deletes it.
+
+Rules for you, the agent:
+
+- Never ask the user to paste a key into the chat, and never accept one there. Give them the command above to run.
+- Never run the `key` command yourself: it needs a real terminal and the user's hands. You may run `key --check`.
+- Never read `secrets.env`, print it, or pass a key on a command line. There is no flag that takes one.
+
+## Generating
+
+```sh
+python SCRIPTS/refgen.py plan     --blueprint .dream-loop/blueprint.json --view front --view left --part foot_l
+python SCRIPTS/refgen.py generate --blueprint .dream-loop/blueprint.json --view front --view left --part foot_l
+```
+
+`plan` sends nothing. It prints the exact prompt for each image, the inputs each will carry and the estimated cost. Tell the user the count and the estimate before running `generate`. The estimate is rough: it comes from the provider's token rates and a token table published for earlier models. The real cost of each call is recorded afterwards as `cost_usd`.
+
+`generate` stops before sending anything if the batch is larger than `max_batch` or its estimate is above `max_cost_usd`. Raise either only on purpose, with `--max-batch` or `--max-cost`, after the user has agreed to the cost. A failed or timed-out call is never retried automatically: a timeout may still have been charged. Images made before the failure are kept.
+
+- `--view NAME`: `front`, `back`, `left`, `right` (the subject's own left and right), `top`, `three_quarter_left`, `three_quarter_right`, `three_quarter_back_left`, `three_quarter_back_right`.
+- `--part ID`: a close-up from the design's own angle, the safest kind, since nothing has to be imagined. `--part ID@VIEW` turns it, for a part the design shows from one side.
+- `--from VIEW`: which blueprint view to work from. By default a view uses the reference view, and a close-up the view that shows the part largest.
+- `--with REF`: also send an approved generated reference, so that a back view stays consistent with an accepted front view. The design still outranks it.
+- `--note "..."`: one extra instruction for these images, for a retry: "the left hand has three claws, not four".
+
+What is sent: image 1 is the source view's `frame` cut from the approved design (not the whole board, so that labels and other poses do not leak in); then the other views of the same pose; then, for a close-up, the part's own box from the blueprint, padded and enlarged.
+
+## The prompts
+
+The two templates are [prompts/view.md](prompts/view.md) and [prompts/part-closeup.md](prompts/part-closeup.md). They are filled from the blueprint: the subject, every part's name, the part's `form` note, its sampled colours, and the neighbours it meets at each joint. Good `form` notes and colour samples in the blueprint make better prompts.
+
+To tune a prompt for one project, copy the template to `.dream-loop/prompts/` and edit the copy. Keep what the templates insist on: the same object; every proportion, part count, colour, material and marking kept; nothing added, removed or restyled; a flat neutral background and even light; no text and no second subject; for a close-up, resolve what is there and invent nothing; for a hidden side, continue the visible design and nothing more.
+
+## Approval
+
+Every image is saved in `.dream-loop/refs/` with a sheet, `<id>.sheet.png`: the approved design beside the generated image, with the blueprint's colours checked against it. The automatic checks (a blueprint colour missing, a large colour that is not in the design, a background that is not flat) catch only gross drift. They cannot tell whether a shape is right.
+
+**Show the user every sheet and let them decide.** Look at it yourself first and tell them what you see that differs from the design: a changed count, a rounded facet, an added seam. Then record their answer:
+
+```sh
+python SCRIPTS/refgen.py approve --blueprint .dream-loop/blueprint.json view-front-1 part-foot_l-1
+python SCRIPTS/refgen.py reject  --blueprint .dream-loop/blueprint.json view-left-1 --reason "the tail is twice as long"
+python SCRIPTS/refgen.py list    --blueprint .dream-loop/blueprint.json
+```
+
+Never approve on the user's behalf, and never approve an image they have not seen. A rejected image is worth one retry with a `--note` naming the fault; after two failures on the same thing, tell the user the model cannot hold that detail and move on without it.
+
+`refs/refs.json` records, for every image: provider, model, the exact prompt and the template's hash, the hash of every input image, the parameters sent, the date, the usage and cost reported, the check results, and whether and when it was approved or rejected.
+
+## How approved references are used
+
+- **By you**, as a reading aid: when checking the parts `blueprint.py blockout` lists under `assumed`, and when building a side the approved design hides.
+- **By part critics**: `parts.py prepare` puts a part's approved close-ups in its folder as `generated.png`, marked GENERATED, with the rule in `brief.json` that the TARGET crop wins any conflict and that a directive resting only on a generated picture cannot fail a gate. Approved views go to the `assembly` critic the same way.
+- **Not** by the view-match gate, the measured layout or the blueprint's measures. Those stay on the approved design.
