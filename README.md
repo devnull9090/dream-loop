@@ -47,6 +47,19 @@ For a character, creature or prop that has to match an approved design sheet, as
 
 It needs Blender, headless or an open session with the blender-mcp add-on. See [references/blender-mode/workflow.md](references/blender-mode/workflow.md).
 
+### Extra views and close-ups from one design
+
+A single concept image often shows the subject from one angle, with small parts a critic cannot read. The agent can offer to generate what is missing from the approved image: front, back, side, top and three-quarter views, and close-ups of single parts. The prompts send the approved image as the input and forbid changing it; they are plain files you can tune ([view](references/blender-mode/prompts/view.md), [part close-up](references/blender-mode/prompts/part-closeup.md)).
+
+You choose the provider and model (OpenAI's `gpt-image-2.6-sunburst` by default) and store the key yourself, in your own terminal. It is asked for without echo and kept in `.dream-loop/secrets.env`, which must be git-ignored:
+
+```sh
+python /path/to/dream-loop/scripts/refgen.py config --provider openai --model gpt-image-2.6-sunburst
+python /path/to/dream-loop/scripts/refgen.py key --provider openai
+```
+
+The agent tells you the estimated cost before each batch (four images at most by default), then shows you every result beside the original. Nothing generated is used until you approve it, each image is recorded with its prompt, inputs, model and cost in `.dream-loop/refs/refs.json`, and a generated image never overrides the approved design. See [references/blender-mode/generated-references.md](references/blender-mode/generated-references.md).
+
 ## Example
 
 Prompt:

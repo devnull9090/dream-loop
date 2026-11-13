@@ -6,14 +6,17 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(Path(__file__).parent))
 import ledger  # noqa: E402
 import parts  # noqa: E402
+import refgen  # noqa: E402
 import verdict  # noqa: E402
 from blueprint_test import sheet  # noqa: E402
+from refgen_test import reply  # noqa: E402
 from viewmatch_test import FIGURE, complete, fake_render  # noqa: E402
 
 FRONT = {"head": (170, 40, 230, 120), "body": FIGURE["body"]}
@@ -349,6 +352,49 @@ class PartsTest(unittest.TestCase):
         self.assertEqual(self.prepare(1, "--capture", f"side={big}", "--capture", f"front={self.root / 'front.png'}")[0], 0)
         review = json.loads((self.rounds / "round-1" / "review.json").read_text(encoding="utf-8"))
         self.assertEqual([round(v, 2) for v in review["parts"]["head"]["boxes"]["side"]], [0.4, 0.1, 0.2, 0.2])
+
+    def refgen(self, *argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()),                 mock.patch.object(refgen, "http_post", lambda *a, **k: reply()), mock.patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}):
+            status = refgen.main([argv[0], "--blueprint", str(self.blueprint), *argv[1:]])
+        return status, json.loads(out.getvalue()) if out.getvalue().strip() else None
+
+    def test_only_approved_generated_references_reach_a_critic_and_they_are_marked(self):
+        self.render()
+        self.prepare(1)
+        self.assertNotIn("generated", self.brief(1, "head"))  # no references at all: the brief is as it always was
+        self.refgen("generate", "--part", "head", "--view", "back")
+        self.prepare(1)
+        self.assertNotIn("generated", self.brief(1, "head"))  # generated but not approved
+        self.assertFalse((self.rounds / "round-1" / "parts" / "head" / "generated.png").exists())
+        self.refgen("approve", "part-head-1", "view-back-1")
+        self.prepare(1)
+        brief = self.brief(1, "head")
+        self.assertEqual([g["id"] for g in brief["generated"]["images"]], ["part-head-1"])
+        self.assertIn("the TARGET crop is right", brief["generated"]["rule"])
+        self.assertIn("never from these", brief["generated"]["rule"])
+        self.assertTrue((self.rounds / "round-1" / "parts" / "head" / "generated.png").exists())
+        self.assertNotIn("generated", self.brief(1, "body"))  # a close-up belongs to its own part; views go to the assembly
+        self.refgen("reject", "part-head-1", "--reason", "it grew a nose")
+        self.prepare(1)
+        self.assertNotIn("generated", self.brief(1, "head"))
+
+    def test_a_part_a_critic_could_not_read_or_that_is_stuck_is_proposed_for_a_close_up(self):
+        blueprint = json.loads(self.blueprint.read_text(encoding="utf-8"))
+        self.assertEqual([s["job"] for s in refgen.suggest(blueprint, self.blueprint)], ["--part head"])  # small on the sheet
+        self.render()
+        self.prepare(1)
+        self.verdicts(1, head=pv("head", 6.0), body=pv("body", 5.5, target_unclear=["form: the hem is four pixels tall in both views"]))
+        self.assertEqual(self.decide()["decision"], "continue")  # the extra field is allowed
+        found = {s["job"]: s["why"] for s in refgen.suggest(blueprint, self.blueprint)}
+        self.assertIn("could not judge it from the approved design: form: the hem", found["--part body"])
+        for n in (2, 3):
+            self.render(hashes={"head": f"head-v{n}", "body": f"body-v{n}"})
+            self.prepare(n)
+            self.verdicts(n, head=pv("head", 6.2, previous=6.0), body=pv("body", 5.5, previous=5.5))
+        self.assertIn("verdict.py says rethink", {s["job"]: s["why"] for s in refgen.suggest(blueprint, self.blueprint)}["--part body"])
+        self.refgen("generate", "--part", "body")
+        self.assertNotIn("--part body", [s["job"] for s in refgen.suggest(blueprint, self.blueprint)])  # already made, awaiting the user
 
     def test_flat_verdict_folder_still_uses_the_whole_image_rule(self):
         flat = self.root / "verdicts"

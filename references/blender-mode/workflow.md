@@ -19,6 +19,8 @@ Resolve script paths from this skill's directory; `SCRIPTS` below stands for `/p
 | `blueprint.json` | The target as numbers. Written once. |
 | `cameras.json` | One solved camera per view. Written once, then frozen. |
 | `ledger.json` | Facts agreed since. |
+| `refs/` | Extra views and part close-ups generated from the target, with `refs.json`. Optional. |
+| `config.json`, `secrets.env` | Image-generation settings and the API key, when references are generated. |
 | `inner/` | The latest inner-loop renders and side-by-side sheets. |
 | `rounds/round-N/` | One outer round: renders, captures, part folders, verdicts. |
 
@@ -44,6 +46,16 @@ Do no work from a later stage on a part that fails an earlier one. In particular
 
 Read [blueprint.md](blueprint.md) and follow it. This is the one step that needs your full attention on the target; everything after it is checked against what you write here. Include every view and pose the target shows.
 
+## 1b. Offer extra reference views (optional)
+
+When the target shows the subject from one direction, the blockout has no depth and the far side is hidden. An image model can make the missing views from the target. Run:
+
+```sh
+python SCRIPTS/refgen.py plan --blueprint .dream-loop/blueprint.json
+```
+
+If it suggests views, read [generated-references.md](generated-references.md) and offer them to the user with the estimated cost. It is their decision, they choose the provider and model, and they store the API key themselves; never ask for a key in the chat. Nothing generated is used until the user has seen it and approved it, and an approved image is still only a reading aid: the target stays the authority for every measure and every judgement. If the user declines, or has no key, carry on without.
+
 ## 2. Build the blockout
 
 ```sh
@@ -52,6 +64,8 @@ python SCRIPTS/blender_run.py blockout --spec .dream-loop/blockout.json --height
 ```
 
 `--height` is the subject's height in scene units. This puts one ellipsoid per part in a "DreamLoop Blockout" collection, each tagged with its part id. If your model comes from a script, read `blockout.json` there instead and size your own primitives from it: centre and size per part, in H.
+
+Parts listed under `assumed` were seen from one direction only, so the extent you cannot see is a guess. Check each against the target, and against any approved generated view, before going on.
 
 ## 3. Inner loop: no critic
 
@@ -92,6 +106,8 @@ When Blender is the product, give no `--capture` at all and point `--renders` at
 - the absolute path to that part's folder (`rounds/round-N/parts/<part>`);
 - the round number.
 
+If the user has approved generated close-ups of a part, `prepare` has already put them in that part's folder, marked as generated, with the rule that the target wins. Do not hand a critic any other generated image.
+
 Do not give it the other parts, the whole subject, a previous score or your opinion. Save each reply to the `verdict` path printed for it. If a reply is not one valid JSON object, ask the same subagent once to resend it.
 
 **Decide:**
@@ -106,8 +122,10 @@ Status 2 means a verdict breaks the rules (a size given as a relative change, a 
 - **continue**: work on the open parts using the verdict files in `act_on`: regressions first, then blockers, then next. Leave locked parts alone. Then inner loop, then a new round.
 - **confirm**: the parts in `confirm` were passed by one critic. Ask a second fresh critic for each, with the same folder, saving the reply as `<part>-confirm.json` beside the first, and run `verdict.py` again. Other parts listed as open still need work.
 - **revert**: a locked part changed, or a part got a point worse. Undo that change. If you meant to change a locked part, prepare the round again with `--unlock PART="reason"`.
-- **rethink**: a part has had two reviews without real progress. Stop adjusting it; rebuild that part from its primitive with a different construction.
-- **ask_user**: stalled after a rethink, or out of rounds. Show the user the part's `pair.png` and the remaining blockers.
+- **rethink**: a part has had two reviews without real progress. Stop adjusting it; rebuild that part from its primitive with a different construction. If the part is small or one-sided on the target, the stall may be a reading problem: run `refgen.py plan` and offer the user the close-up it suggests (see [generated-references.md](generated-references.md)).
+- **ask_user**: stalled after a rethink, or out of rounds. Show the user the part's `pair.png` and the remaining blockers, and offer a close-up if `refgen.py plan` suggests one.
+
+A verdict may also list `target_unclear`: things the critic could not read on the target because the part is too small or too soft there. Do not act on a guess. Offer the user a generated close-up of that part, or ask them what the target is meant to show and record the answer in the ledger.
 - **done**: every part and the assembled subject have been passed by two critics, with every view judged.
 
 A part is `open` until a critic passes it, `passing` until a second confirms it, then `locked`. Locked parts are not sent again, and their model hash and pixels are watched: a change without `--unlock` stops the round. When every part is locked, the next round sends one more subject, `assembly`, which checks how the parts read together.
@@ -121,6 +139,7 @@ A part is `open` until a critic passes it, `passing` until a second confirms it,
   python SCRIPTS/ledger.py add .dream-loop/ledger.json --part head --fact "eye diameter is 0.04 H" --key head.eye.diameter --value 0.04 --source "round 3"
   ```
   Every later critic of that part receives it as a constraint, and one that contradicts a keyed fact without evidence is rejected.
+- **Generated references never override the target.** An image generated from the target and approved by the user helps you and a critic read it. It settles no measure, fails no gate, and loses every disagreement with the target. Unapproved images are not used at all.
 - **One camera per view.** Captures taken with any other camera are not comparable with earlier rounds and fail the capture check.
 - **Engine captures drift.** A lock is watched through the Blender model's hash and through the part's own pixels in the capture. If two captures of an unchanged model make `parts.py` report locked parts as changed, pass a higher `--drift`. A neighbour moving in front of a locked part changes which of its pixels show and can trip the check; unlock it with that reason if so.
 

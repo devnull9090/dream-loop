@@ -40,6 +40,7 @@ import compare  # noqa: E402
 import ledger  # noqa: E402
 import masks  # noqa: E402
 import measure  # noqa: E402
+import refgen  # noqa: E402
 import verdict  # noqa: E402
 import viewmatch  # noqa: E402
 
@@ -48,6 +49,9 @@ DRIFT = 0.06  # mean colour change (0-1) in a part's crop that counts as the par
 PAD = 0.15
 SCOPE = ("Layout is already measured and passes: judge form, then colour and material, then surface detail. "
          "The target is a design sheet; lighting and background are not part of the judgement.")
+GENERATED_RULE = ("generated.png was made by an image model from the approved target and accepted by the user as a reading aid. It is not the target. "
+                  "Where it differs from a TARGET crop in pair.png, the TARGET crop is right. Judge the product against TARGET; use these only to "
+                  "understand what TARGET shows too small or from one side. Evidence for a challenge must come from TARGET, never from these.")
 ASSEMBLY_FORM = ("The whole subject. Every part has passed on its own; judge only what the parts cannot show alone: how they join, "
                  "whether materials and colours are consistent across parts, and whether the whole reads as the target does.")
 
@@ -291,6 +295,12 @@ def prepare(blueprint_path, round_number, renders, captures=None, capture_masks=
         brief = {"part": name, "round": round_number, "subject": blueprint["subject"], "pair": "pair.png", "views": [v for v, _ in rows],
                  "form": part["form"] if part else ASSEMBLY_FORM, "colours": part["colours"] if part else [],
                  "measured": measured_values, "settled": settled, "has_previous": has_previous, "previous_directives": directives, "scope": SCOPE}
+        # Generated references the user has approved: a part's own close-ups, or the extra views for the assembly.
+        generated = refgen.approved(blueprint, blueprint_path, part=name) if part else refgen.approved(blueprint, blueprint_path, kind="view")
+        if generated:
+            refgen.reference_sheet(generated[-4:], refgen.refs_dir(blueprint_path)).save(folder / "generated.png")
+            brief["generated"] = {"sheet": "generated.png", "rule": GENERATED_RULE,
+                                  "images": [{"id": g["id"], "shows": g["shows"], "model": g["model"]} for g in generated[-4:]]}
         (folder / "brief.json").write_text(json.dumps(brief, indent=1) + "\n", encoding="utf-8")
         suffix = "-confirm" if entry["send"] == "confirm" else ""
         send.append({"part": name, "role": entry["send"], "folder": folder.as_posix(),
