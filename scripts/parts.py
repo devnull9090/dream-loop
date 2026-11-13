@@ -3,6 +3,7 @@
 
   python parts.py prepare --blueprint .dream-loop/blueprint.json --round 3 --renders .dream-loop/inner \
          [--capture side=captures/side.png ...] [--capture-mask side=masks/side.png ...] [--unlock head="jaw redesigned"]
+         [--only head ...]
 
 It needs a mask render (blender_run.py render, at the solved cameras) and a capture of the real
 product for every view in the blueprint; a view left out stops the round. With no --capture at
@@ -23,6 +24,11 @@ What it does, in order:
     previous crop for each view, cut from the part's own bounds) and brief.json (form notes,
     colours, measured values, settled facts, previous directives).
  5. Writes round-N/review.json, which verdict.py reads.
+
+--only PART (repeatable) makes it a round about those parts alone: only they are sent, and
+verdict.py decides on them and carries every other part's state forward as it was. Everything
+else still runs for the whole subject: the gates, the capture check, and the watch on locked
+parts, so a change to a locked part outside the scope still stops the round.
 
 Prints one JSON line listing the parts to send and where each verdict goes, and the parts held
 back by the outline gate with what differs. Exit status 1 when a gate fails, a locked part changed
@@ -150,7 +156,7 @@ def parse_pairs(items, what):
 
 
 def prepare(blueprint_path, round_number, renders, captures=None, capture_masks=None, unlock=None, root=None,
-            ledger_path=None, pass_score=8, drift_limit=DRIFT):
+            ledger_path=None, pass_score=8, drift_limit=DRIFT, only=None):
     blueprint = blueprints.load(blueprint_path)
     tolerance = blueprints.tolerances(blueprint)
     root = Path(root) if root else Path(blueprint_path).parent
@@ -165,6 +171,10 @@ def prepare(blueprint_path, round_number, renders, captures=None, capture_masks=
     for name in unlock:
         if name not in part_ids:
             raise ValueError(f"unknown part {name} in --unlock")
+    scope = list(dict.fromkeys(only or []))
+    for name in scope:
+        if name not in part_ids + [ASSEMBLY]:
+            raise ValueError(f"unknown part {name} in --only; choose from {', '.join(part_ids + [ASSEMBLY])}")
     uncaptured = [v["id"] for v in blueprint["views"] if v["id"] not in captures]
     if captures and uncaptured:
         raise ValueError(f"no --capture for view(s) {', '.join(uncaptured)}: when the product is captured outside Blender, "
@@ -256,6 +266,8 @@ def prepare(blueprint_path, round_number, renders, captures=None, capture_masks=
     earlier = [(rounds / f"round-{n}", json.loads((rounds / f"round-{n}" / "review.json").read_text(encoding="utf-8")))
                for n in range(round_number - 1, 0, -1) if (rounds / f"round-{n}" / "review.json").exists()]
     review = {"round": round_number, "views": view_data, "layout": layout, "parts": {}, "regressions": [], "unlocked": unlock, "warnings": warnings}
+    if scope:
+        review["scope"] = scope
     for name in part_ids + [ASSEMBLY]:
         state = states.get(name, {"state": "open"})
         views = [v for (n, v) in crops if n == name]
@@ -279,6 +291,10 @@ def prepare(blueprint_path, round_number, renders, captures=None, capture_masks=
                 review["parts"][name].update(send=None, held="form")  # the difference is measured; a critic would only restate it
     if any(review["parts"][name]["state"] == "open" for name in part_ids):
         review["parts"][ASSEMBLY]["send"] = None  # judged once every part has passed on its own
+    for name, entry in review["parts"].items():
+        if scope and name not in scope:
+            entry["send"] = None  # not this round's business; its state is carried forward
+            entry.pop("held", None)
     if not layout["pass"] or review["regressions"]:
         for entry in review["parts"].values():
             entry["send"] = None
@@ -343,7 +359,13 @@ def prepare(blueprint_path, round_number, renders, captures=None, capture_masks=
 
     (base / "review.json").write_text(json.dumps(review, indent=1) + "\n", encoding="utf-8")
     held = [name for name, entry in review["parts"].items() if entry.get("held") == "form"]
+    waiting = [name for name in scope if not review["parts"][name]["send"] and review["parts"][name].get("held") != "form"]
+    if waiting and layout["pass"] and not review["regressions"]:
+        why = {name: ("it is locked" if review["parts"][name]["state"] == "locked" else "parts are still open" if name == ASSEMBLY else "nothing to send")
+               for name in waiting}
+        notes.append("--only named parts that need no critic this round: " + ", ".join(f"{name} ({reason})" for name, reason in why.items()))
     return {"round": round_number, "layout": layout["pass"], "failing": layout["failing"], "restart": layout["restart"], "send": send,
+            **({"scope": scope} if scope else {}),
             "held": held, "form_failing": [line for name in held for line in review["parts"][name]["outline"]["lines"]], "notes": notes,
             "locked": [n for n, e in review["parts"].items() if e["state_before"] == "locked" and not e["changed"] and n not in unlock],
             "regressions": review["regressions"], "warnings": warnings}
@@ -358,6 +380,7 @@ def main(argv=None):
     parser.add_argument("--capture", action="append", metavar="VIEW=FILE", help="Capture of the real product for a view; repeatable")
     parser.add_argument("--capture-mask", action="append", metavar="VIEW=FILE", help="Subject mask of that capture (white on the subject); repeatable")
     parser.add_argument("--unlock", action="append", metavar="PART=REASON", help="Reopen a locked part on purpose; repeatable")
+    parser.add_argument("--only", action="append", metavar="PART", help="Send only this part (or assembly) to a critic this round; repeatable")
     parser.add_argument("--root", help="Working folder (default: the blueprint's folder)")
     parser.add_argument("--ledger", help="Settled-facts ledger (default: ledger.json in the working folder)")
     parser.add_argument("--pass-score", type=float, default=8, help="Score a part must reach (default: %(default)s)")
@@ -370,7 +393,7 @@ def main(argv=None):
             raise ValueError("--round starts at 1")
         result = prepare(args.blueprint, args.round, args.renders, parse_pairs(args.capture, "--capture"),
                          parse_pairs(args.capture_mask, "--capture-mask"), parse_pairs(args.unlock, "--unlock"),
-                         args.root, args.ledger, args.pass_score, args.drift)
+                         args.root, args.ledger, args.pass_score, args.drift, args.only)
     except (blueprints.BlueprintError, OSError, ValueError, KeyError) as error:
         print(error, file=sys.stderr)
         return 2
