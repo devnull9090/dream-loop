@@ -26,6 +26,10 @@ When the folder holds round-N/ folders with a review.json (written by parts.py p
 A part is open until a critic passes it, passing until a second critic confirms it, then
 locked. A locked part whose model changed without an --unlock is a regression: revert.
 
+A round prepared with --only is about the parts it names. The decision is made on those, a
+verdict is owed only for those, and every other part keeps the state, score and verdict file
+it had; "scope" in the output says which parts the round covered.
+
 No dependencies.
 """
 import argparse
@@ -228,7 +232,8 @@ def replay_parts(folder, pass_score=8, upto=None, strict=True):
         review = load_json(base / "review.json")
         latest = strict and n == numbers[-1]
         outcome = {"round": n, "layout": review["layout"], "regressions": list(review.get("regressions", [])), "parts": {}, "disputes": [],
-                   "held": {part: entry["outline"]["lines"] for part, entry in review["parts"].items() if entry.get("held") == "form"}}
+                   "held": {part: entry["outline"]["lines"] for part, entry in review["parts"].items() if entry.get("held") == "form"},
+                   "scope": review.get("scope")}
         for part, entry in review["parts"].items():
             state = states.setdefault(part, {"state": "open", "track": Track(PART_GATES, PART_RANGES), "reviews": 0})
             if part in review.get("unlocked", {}) or entry.get("changed"):
@@ -288,6 +293,10 @@ def decide_parts(folder, pass_score=8, max_rounds=10):
     for part, state in states.items():
         by.setdefault(state.get("decision") or ("locked" if state["state"] == "locked" else "waiting"), []).append(part)
     parts = {part: {k: state[k] for k in ("state", "score", "gate", "gain", "why") if state.get(k) is not None} for part, state in states.items()}
+    scope = last.get("scope")
+    for part, state in states.items():  # a part outside this round's scope: where its last verdict is, so its directives are not lost
+        if scope and part not in scope and state["state"] == "open" and state.get("act_on"):
+            parts[part]["last_verdict"] = state["act_on"]
     act_on = sorted({states[p]["act_on"] for key in ("continue", "revert", "rethink", "ask_user") for p in by.get(key, []) if states[p].get("act_on")})
     layout = last["layout"]
     if last["regressions"]:
@@ -310,12 +319,17 @@ def decide_parts(folder, pass_score=8, max_rounds=10):
                                  + "; fix those shapes in the inner loop (inner.py lists what differs)")
     else:
         decision, why = "continue", "parts still open: " + ", ".join(p for p, state in states.items() if state["state"] == "open")
-    if decision in ("continue", "revert", "rethink", "layout", "restart", "form") and max_rounds and last["round"] >= max_rounds:
-        decision, why = "ask_user", f"{last['round']} rounds used; last decision was {decision}: {why}"
+    # A round about one part uses up that part's reviews, not everyone's: count those instead of round numbers.
+    used = max((states[p]["reviews"] for p in scope if p in states), default=0) if scope else last["round"]
+    if decision in ("continue", "revert", "rethink", "layout", "restart", "form") and max_rounds and used >= max_rounds:
+        spent = f"{used} reviews of {', '.join(scope)}" if scope else f"{used} rounds"
+        decision, why = "ask_user", f"{spent} used; last decision was {decision}: {why}"
     result = {"round": last["round"], "decision": decision, "why": why, "act_on": act_on, "confirm": by.get("confirm", []),
               "parts": parts, "disputes": last["disputes"], "regressions": len(last["regressions"])}
     if last["held"]:
         result["held"] = last["held"]  # parts kept from the critics by the outline gate, with what differs
+    if scope:
+        result["scope"] = scope
     return result
 
 

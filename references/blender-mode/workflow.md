@@ -119,6 +119,14 @@ When Blender is the product, give no `--capture` at all and point `--renders` at
 
 A part that fails its outline is not sent: it is listed under `held` with the differences under `form_failing`. Fix it in the inner loop; a critic would only restate what is already measured. The other parts go ahead.
 
+**A round about one part.** Sending every open part every round is the expensive way to work: each critic costs about the same whatever it is shown, and a round of a dozen parts that each move half a point teaches little. After the first full round, take the parts one at a time. Work a part in the inner loop with `inner.py --part ID` until its close-ups look right, then:
+
+```sh
+python SCRIPTS/parts.py prepare --blueprint .dream-loop/blueprint.json --round N --renders .dream-loop/inner --only head
+```
+
+`--only` is repeatable. Only the named parts are sent and only their verdicts are owed; `verdict.py` decides on them and carries every other part's state, score and last verdict forward (`last_verdict` in its output names the file, so those directives are not lost). The whole subject is still measured and every locked part is still watched, so a change that reaches a locked part stops the round as before. Engine captures are still needed for every view. Stay on the part through confirm and lock, then move to the next; `--only assembly` sends nothing until every part has passed.
+
 **Ask one critic per part listed.** Use a subagent with a fresh, empty context for each; run them in parallel. Give each one only:
 
 - the absolute path to [part-critic.md](part-critic.md), with the instruction to read it and act as that critic;
@@ -143,7 +151,7 @@ Status 2 means a verdict breaks the rules (a size given as a relative change, a 
 - **confirm**: the parts in `confirm` were passed by one critic. Ask a second fresh critic for each, with the same folder, saving the reply as `<part>-confirm.json` beside the first, and run `verdict.py` again. Other parts listed as open still need work.
 - **revert**: a locked part changed, or a part got a point worse. Undo that change. If you meant to change a locked part, prepare the round again with `--unlock PART="reason"`.
 - **rethink**: a part has had two reviews without real progress. Stop adjusting it; rebuild that part from its primitive with a different construction. If the part is small or one-sided on the target, the stall may be a reading problem: run `refgen.py plan` and offer the user the close-up it suggests (see [generated-references.md](generated-references.md)).
-- **ask_user**: stalled after a rethink, or out of rounds. Show the user the part's `pair.png` and the remaining blockers, and offer a close-up if `refgen.py plan` suggests one.
+- **ask_user**: stalled after a rethink, or out of rounds. Show the user the part's `pair.png` and the remaining blockers, and offer a close-up if `refgen.py plan` suggests one. In a round about one part the limit counts that part's reviews, not round numbers.
 
 A verdict may also list `target_unclear`: things the critic could not read on the target because the part is too small or too soft there. Do not act on a guess. Offer the user a generated close-up of that part, or ask them what the target is meant to show and record the answer in the ledger.
 - **done**: every part and the assembled subject have been passed by two critics, with every view judged.
