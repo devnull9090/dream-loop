@@ -15,11 +15,18 @@ A folder for this part:
   - `settled`: facts already agreed. Treat them as constraints.
   - `previous_directives`: what the last critic of this part asked for.
   - `scope`: what is outside the judgement.
+  - `twins` and `also`: present when this part has a mirrored or copied twin (a left and a right leg) that is the same geometry in the model. See "Twins".
 - Sometimes `generated.png`, with a `generated` entry in `brief.json`: extra pictures of this part made by an image model from the target. See "Generated references" before using them.
 
 Read both before judging. You are not given, and should not ask for, the rest of the subject: other parts have their own critics.
 
 When the part is `assembly`, the crops show the whole subject and every part has already passed on its own. Judge only what a single part cannot show: how the parts join, whether colour and material are consistent from part to part, and whether the whole reads as the target does. Use the same gates and output.
+
+## Twins
+
+When `brief.json` has `twins`, you are judging two or more parts that are one piece of geometry, mirrored or copied in the model; that was measured, not assumed. The rows of the sheet labelled with another part's name show that part in its own views. Read them as more views of the same design: a difference from the target that you see in one of them is a difference in all.
+
+Give one verdict, with `part` set to the part named in `brief.json`. Give each directive once; it is applied to every twin. Name the row you saw it in under `where`. Do not ask for one side to differ from the other, and do not list as a difference something that is only the mirror image of what the other row shows. `also` gives each twin's own views and measured values.
 
 ## What is already decided
 

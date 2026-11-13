@@ -93,10 +93,10 @@ def world_points(obj, depsgraph):
     return co.reshape(-1, 3).astype(numpy.float64) @ matrix[:3, :3].T + matrix[:3, 3]
 
 
-def material_signature(material):
+def material_signature(material, named=True):
     if material is None:
         return "none"
-    out = [material.name, repr([round(c, 4) for c in material.diffuse_color])]
+    out = [material.name if named else "", repr([round(c, 4) for c in material.diffuse_color])]
     if material.node_tree:
         for node in sorted(material.node_tree.nodes, key=lambda n: n.name):
             out.append(node.bl_idname)
@@ -123,6 +123,48 @@ def part_hash(objects, depsgraph):
             attribute.data.foreach_get("color", values)
             digest.update(numpy.round(values, 3).tobytes())
     return digest.hexdigest()[:16]
+
+
+TWIN = 0.002  # two parts are the same shape when no vertex is further than this share of the part's size from one of the other's
+
+
+def twin(objects, source_objects, source, depsgraph, height):
+    """Whether a part is its source's geometry mirrored left to right, or a plain copy of it.
+
+    Both are compared about the centre of their own bounds, so where each sits does not matter;
+    how each is turned does. Returns {"of": source, "how": "mirror" | "copy" | None, "why": ...}."""
+    from mathutils import kdtree
+
+    def centred(group):
+        points = numpy.concatenate([world_points(o, depsgraph) for o in group])
+        low, high = points.min(axis=0), points.max(axis=0)
+        return points - (low + high) / 2, float((high - low).max())
+
+    def materials(group):
+        return sorted(material_signature(slot.material, named=False) for o in group for slot in o.material_slots)
+
+    a, size = centred(source_objects)
+    b, _ = centred(objects)
+    if len(a) != len(b):
+        return {"of": source, "how": None, "why": f"{len(b)} vertices against {len(a)}"}
+    if materials(objects) != materials(source_objects):
+        return {"of": source, "how": None, "why": "their materials differ"}
+
+    def furthest(points, others):
+        tree = kdtree.KDTree(len(others))
+        for index, point in enumerate(others):
+            tree.insert(point, index)
+        tree.balance()
+        return max(tree.find(point)[2] for point in points[::max(1, len(points) // 4000)])
+
+    best = None
+    for how, sign in (("mirror", -1.0), ("copy", 1.0)):
+        moved = b * numpy.array([sign, 1.0, 1.0])
+        off = max(furthest(moved, a), furthest(a, moved))
+        if off <= TWIN * max(size, 1e-9):
+            return {"of": source, "how": how}
+        best = off if best is None else min(best, off)
+    return {"of": source, "how": None, "why": f"their shapes differ by up to {best / height:.3f} H"}
 
 
 def bounds(objects, depsgraph):
@@ -338,6 +380,9 @@ def render_view(scene, blueprint, view, out_dir, camera_spec=None, long_edge=102
             entry["visible"] = round(entry["visible_px"] / entry["solo_px"], 3) if entry.get("solo_px") else 0.0
             entry["hash"] = part_hash(objects, depsgraph)
             entry["objects"] = len(objects)
+            source = next((p.get("same_as") for p in blueprint["parts"] if p["id"] == part), None)
+            if source and parts.get(source):
+                entry["twin"] = twin(objects, parts[source], source, depsgraph, camera["subject_height"])
         else:
             entry.update(objects=0, visible=0.0)
         data["parts"][part] = entry

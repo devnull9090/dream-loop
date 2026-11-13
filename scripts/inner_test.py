@@ -184,11 +184,30 @@ class EndToEndTest(Built):
         self.assertAlmostEqual(after["distance"], 2 * before["distance"], places=2)  # same distance in subject heights
         self.assertAlmostEqual(after["distance_H"], before["distance_H"], places=3)
 
+    def test_5b_legs_that_are_one_mesh_mirrored_share_a_critic(self):
+        # The blockout gave leg_r, seen from the front only, an assumed depth: the same in the blueprint, not the same in the model.
+        twin = json.loads((self.root / "inner" / "front.ids.json").read_text(encoding="utf-8"))["parts"]["leg_r"]["twin"]
+        self.assertEqual((twin["of"], twin["how"]), ("leg_l", None))
+        self.assertRegex(twin["why"], r"^their shapes differ by up to 0\.0\d+ H$")
+        # Made the same size, the two are one mesh mirrored, and Blender says so.
+        match = "import bpy\nbpy.data.objects['BO_leg_r'].scale = bpy.data.objects['BO_leg_l'].scale\n"
+        status, result, err = self.run_inner("--setup", self.script("match.py", match), "--out", str(self.root / "matched"))
+        self.assertEqual((status, err), (0, ""), result)
+        twin = json.loads((self.root / "matched" / "front.ids.json").read_text(encoding="utf-8"))["parts"]["leg_r"]["twin"]
+        self.assertEqual(twin, {"of": "leg_l", "how": "mirror"})
+        status, result, _ = call(parts, "prepare", "--blueprint", str(self.blueprint), "--round", "1", "--renders", str(self.root / "matched"),
+                                 "--root", str(self.root / "matched"))
+        self.assertEqual((status, [(s["part"], s.get("parts")) for s in result["send"]]),
+                         (0, [("head", None), ("body", None), ("leg_l", ["leg_l", "leg_r"])]))
+        brief = json.loads((Path(result["send"][2]["folder"]) / "brief.json").read_text(encoding="utf-8"))
+        self.assertEqual((brief["views"], [(a["part"], a["views"]) for a in brief["also"]]), (["side", "front"], [("leg_r", ["front"])]))
+
     def test_6_per_part_review_to_done(self):
         renders = str(self.root / "inner")
         status, result, err = call(parts, "prepare", "--blueprint", str(self.blueprint), "--round", "1", "--renders", renders)
         self.assertEqual((status, err), (0, ""), result)
         self.assertEqual([s["part"] for s in result["send"]], ["head", "body", "leg_l", "leg_r"])
+        self.assertTrue(any("leg_r is same_as leg_l in the blueprint but not in the model" in note for note in result["notes"]))
         brief = json.loads((Path(result["send"][3]["folder"]) / "brief.json").read_text(encoding="utf-8"))
         self.assertEqual((brief["views"], brief["form"]), (["front"], "A plain tapered post under the body."))  # leg_r is hidden from the side
         with Image.open(Path(result["send"][0]["folder"]) / "pair.png") as pair:

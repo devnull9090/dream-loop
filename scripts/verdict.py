@@ -30,6 +30,9 @@ A round prepared with --only is about the parts it names. The decision is made o
 verdict is owed only for those, and every other part keeps the state, score and verdict file
 it had; "scope" in the output says which parts the round covered.
 
+A part that shared its critic with another (a mirrored pair, see parts.py) has no verdict file
+of its own: the verdict saved for the part it was sent with is applied to it as well.
+
 No dependencies.
 """
 import argparse
@@ -241,11 +244,12 @@ def replay_parts(folder, pass_score=8, upto=None, strict=True):
             state.pop("decision", None)
             if not review["layout"]["pass"] or not entry.get("send"):
                 continue
-            brief = load_json(base / "parts" / part / "brief.json")
+            judged = entry.get("shared") or part  # a twin is judged by the verdict of the part it was sent with
+            brief = load_json(base / "parts" / judged / "brief.json")
             for role in ("critic", "confirm"):
                 if role == "critic" and entry["send"] == "confirm":
                     continue  # passed in an earlier round; only the second opinion is owed
-                name = f"{part}.json" if role == "critic" else f"{part}-confirm.json"
+                name = f"{judged}.json" if role == "critic" else f"{judged}-confirm.json"
                 path = base / "verdicts" / name
                 if role == "confirm" and (state["state"] != "passing" or not path.exists()):
                     if state["state"] == "passing":
@@ -253,17 +257,19 @@ def replay_parts(folder, pass_score=8, upto=None, strict=True):
                     break
                 try:
                     verdict = load(path)
-                    found = part_problems(verdict, part, brief)
+                    found = part_problems(verdict, judged, brief)
                 except OSError:
                     found = ["no verdict yet; ask a critic for this part and save its reply here"]
                 except ValueError as error:
                     found = [str(error)]
                 if found:
-                    if latest:
-                        outcome.setdefault("problems", []).append(f"round-{n}/verdicts/{name}: " + "; ".join(found))
+                    line = f"round-{n}/verdicts/{name}: " + "; ".join(found)
+                    if latest and line not in outcome.setdefault("problems", []):
+                        outcome["problems"].append(line)
                     break
-                outcome["disputes"] += [{"part": part, "id": item["id"], "measure": item["measure"], "evidence": item["evidence"]}
-                                        for key in ("blockers", "next") for item in verdict[key] if item.get("measure") and item.get("evidence")]
+                if judged == part:
+                    outcome["disputes"] += [{"part": part, "id": item["id"], "measure": item["measure"], "evidence": item["evidence"]}
+                                            for key in ("blockers", "next") for item in verdict[key] if item.get("measure") and item.get("evidence")]
                 if role == "critic":
                     decision, why, gain = state["track"].judge(verdict, state["reviews"] == 0, pass_score)
                     state["reviews"] += 1
