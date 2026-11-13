@@ -14,6 +14,7 @@ This step is optional, costs money, and is the user's decision each time. Offer 
 A generated image is supplementary evidence. It is never the target.
 
 - The approved design stays the authority. Measures come from the blueprint's boxes on the approved design, and the view-match and layout gates never look at a generated image.
+- The one number a generated view may supply is an extent the approved design shows from no direction, for the blockout only, and only after the user approves that view for it (see "Depth for the blockout").
 - Nothing generated is used until the user has looked at it and accepted it. `refgen.py approve` records that; until then every other script ignores the image.
 - Where a generated image and the approved design disagree, the approved design is right. A critic is told which images are generated and told this.
 - If the approved design changes, or a generated file is edited, its approval lapses.
@@ -109,8 +110,25 @@ Never approve on the user's behalf, and never approve an image they have not see
 
 `refs/refs.json` records, for every image: provider, model, the exact prompt and the template's hash, the hash of every input image, the parameters sent, the date, the usage and cost reported, the check results, and whether and when it was approved or rejected.
 
+## Depth for the blockout
+
+A blockout made from one view has to assume that each part is as deep as it is wide. An approved front, back, left or right view can replace that assumption with a number. This takes a second, separate approval, because it lets a generated image set a size:
+
+```sh
+python SCRIPTS/refgen.py boxes   --blueprint .dream-loop/blueprint.json view-front-1 --box head=0.40,0.12,0.20,0.17 --box torso=0.34,0.29,0.31,0.40
+python SCRIPTS/refgen.py approve --blueprint .dream-loop/blueprint.json view-front-1 --for-blockout
+python SCRIPTS/blueprint.py blockout .dream-loop/blueprint.json --out .dream-loop/blockout.json
+```
+
+1. `boxes` takes a tight box for each part you can see on the generated view, as `x,y,w,h` fractions of that image, the same way the blueprint's boxes are drawn on the target. The subject's own box is keyed off the flat background (or given with `--subject`). It writes `<id>.boxes.png`.
+2. Show the user `<id>.boxes.png` and say what it will be used for. If they agree, `approve --for-blockout` records it. Drawing the boxes again clears that approval.
+3. `blueprint.py blockout` then uses the view, and prints `from_generated` with the parts it affected. `--no-refs` ignores generated views.
+
+What it changes is narrow on purpose. A part whose width and depth the target already settles is left exactly as it was. For a part the target leaves undetermined, the generated view's measure is combined with the target's at a third of the weight. Height and height above the base always come from the target. The blueprint, its `measures`, the view-match gate and the measured layout are untouched: the inner loop still checks the model against the target alone, so a wrong generated depth can only make the starting primitive wrong in a direction no target view measures. Check those parts by eye, as you would the `assumed` ones.
+
 ## How approved references are used
 
 - **By you**, as a reading aid: when checking the parts `blueprint.py blockout` lists under `assumed`, and when building a side the approved design hides.
 - **By part critics**: `parts.py prepare` puts a part's approved close-ups in its folder as `generated.png`, marked GENERATED, with the rule in `brief.json` that the TARGET crop wins any conflict and that a directive resting only on a generated picture cannot fail a gate. Approved views go to the `assembly` critic the same way.
+- **By the blockout**, for unseen extents only, when the user has approved a view `--for-blockout`.
 - **Not** by the view-match gate, the measured layout or the blueprint's measures. Those stay on the approved design.

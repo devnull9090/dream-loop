@@ -65,7 +65,7 @@ python SCRIPTS/blender_run.py blockout --spec .dream-loop/blockout.json --height
 
 `--height` is the subject's height in scene units. This puts one ellipsoid per part in a "DreamLoop Blockout" collection, each tagged with its part id. If your model comes from a script, read `blockout.json` there instead and size your own primitives from it: centre and size per part, in H.
 
-Parts listed under `assumed` were seen from one direction only, so the extent you cannot see is a guess. Check each against the target, and against any approved generated view, before going on.
+Parts listed under `assumed` were seen from one direction only, so the extent you cannot see is a guess. Check each against the target, and against any approved generated view, before going on. If the user approved a generated front or side view, "Depth for the blockout" in [generated-references.md](generated-references.md) shows how to let it replace the guess; parts sized that way are listed under `from_generated`.
 
 ## 3. Inner loop: no critic
 

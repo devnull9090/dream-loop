@@ -7,14 +7,16 @@ colours and form notes. Every later check and critic works from this sheet.
 
   python blueprint.py validate .dream-loop/blueprint.json [--write]
   python blueprint.py overlay  .dream-loop/blueprint.json --out .dream-loop/blueprint.png
-  python blueprint.py blockout .dream-loop/blueprint.json --out .dream-loop/blockout.json
+  python blueprint.py blockout .dream-loop/blueprint.json --out .dream-loop/blockout.json [--no-refs]
 
 validate  lists everything wrong with the sheet (exit status 2) or prints one JSON line.
           --write fills in target_size, colours sampled at their "at" points, and the
           derived "measures" block (sizes and positions as ratios of subject height H).
 overlay   draws every box and joint on the target so the boxes can be checked by eye.
 blockout  turns the measures into one primitive per part (centre and size in H) to
-          start, or restart, the model from.
+          start, or restart, the model from. An extent the target shows from no direction is
+          taken from a generated view the user approved for that purpose (refgen.py), when
+          there is one; --no-refs leaves it assumed.
 
 All boxes are x, y, w, h as fractions of the target image, the same as compare.py.
 validate needs no dependencies when target_size is already recorded; the rest need Pillow.
@@ -333,13 +335,21 @@ def solve_pair(rows):
     return ca * along, cb * along, False
 
 
-def blockout(blueprint):
+HINT_WEIGHT = 1 / 3  # a measure from a generated view counts this much of one from the approved target
+
+
+def blockout(blueprint, hints=None):
     """One primitive per part, in H, from the views that show the reference view's pose.
 
     Axes follow Blender with the subject facing -Y: x to the image right of a front view, y away
     from a front camera, z up from the subject's base. Camera yaw 0 is the front view, 90 the
     view from +X. A part seen in only one direction gets its unseen extent assumed equal to the
     seen one; those are listed under "assumed" and are the first thing to check in the model.
+
+    hints are measures from generated views the user approved for this purpose, as
+    [{"ref": id, "yaw": degrees, "parts": {part id: measure}}]. They are used only for a part the
+    target leaves undetermined, never to adjust one it settles, and the part then lists the
+    references under "generated".
     """
     measures = blueprint.get("measures") or derive(blueprint)
     pose = next(v["pose"] for v in blueprint["views"] if v["id"] == blueprint["reference_view"])
@@ -347,23 +357,38 @@ def blockout(blueprint):
     out = []
     for part in blueprint["parts"]:
         seen = [(v, measures[v["id"]]["parts"][part["id"]]) for v in views if part["id"] in measures[v["id"]]["parts"]]
-        if not seen:
+        rows = [(math.radians(v["camera"]["yaw"]), m, 1) for v, m in seen]
+        extra = [(math.radians(h["yaw"]), h["parts"][part["id"]], HINT_WEIGHT) for h in hints or [] if part["id"] in h["parts"]]
+        if not rows and not extra:
             continue
-        yaws = [math.radians(v["camera"]["yaw"]) for v, _ in seen]
-        x, y, _ = solve_pair([(math.cos(a), math.sin(a), m["cx"]) for a, (_, m) in zip(yaws, seen)])
-        width, depth, known = solve_pair([(abs(math.cos(a)), abs(math.sin(a)), m["width"]) for a, (_, m) in zip(yaws, seen)])
+
+        def solve(rows):
+            position = solve_pair([(math.cos(a) * w, math.sin(a) * w, m["cx"] * w) for a, m, w in rows])
+            size = solve_pair([(abs(math.cos(a)) * w, abs(math.sin(a)) * w, m["width"] * w) for a, m, w in rows])
+            return position[0], position[1], size[0], size[1], size[2]
+
+        used = []
+        if rows:
+            x, y, width, depth, known = solve(rows)
+        if extra and not (rows and known):
+            x, y, width, depth, known = solve(rows + extra)
+            used = sorted({h["ref"] for h in hints if part["id"] in h["parts"]})
         assumed = []
         if not known:
             # Only one direction was seen, so the split between width and depth is unknown: assume a round section.
-            across = sum(m["width"] for _, m in seen) / len(seen)
-            a = yaws[0]
+            across = sum(m["width"] for _, m, _ in rows + extra) / len(rows + extra)
+            a = (rows + extra)[0][0]
             width = depth = across / (abs(math.cos(a)) + abs(math.sin(a)))
             assumed = ["depth" if abs(math.cos(a)) >= abs(math.sin(a)) else "width"]
-        height = sum(m["height"] for _, m in seen) / len(seen)
-        z = sum(m["cy"] for _, m in seen) / len(seen)
-        out.append({"id": part["id"], "centre": [round(x, 4), round(y, 4), round(z, 4)],
-                    "size": [round(max(width, 0.01), 4), round(max(depth, 0.01), 4), round(height, 4)],
-                    "views": [v["id"] for v, _ in seen], "assumed": assumed})
+        vertical = [m for _, m, _ in rows or extra]  # height and base come from the target whenever it shows the part
+        height = sum(m["height"] for m in vertical) / len(vertical)
+        z = sum(m["cy"] for m in vertical) / len(vertical)
+        entry = {"id": part["id"], "centre": [round(x, 4), round(y, 4), round(z, 4)],
+                 "size": [round(max(width, 0.01), 4), round(max(depth, 0.01), 4), round(height, 4)],
+                 "views": [v["id"] for v, _ in seen], "assumed": assumed}
+        if used:
+            entry["generated"] = used
+        out.append(entry)
     return {"unit": "H", "pose": pose, "parts": out}
 
 
@@ -377,6 +402,8 @@ def main(argv=None):
             command.add_argument("--write", action="store_true", help="Record target_size, sampled colours and measures in the file")
         else:
             command.add_argument("--out", required=True, help="File to write")
+        if name == "blockout":
+            command.add_argument("--no-refs", action="store_true", help="Ignore generated views approved for the blockout")
     args = parser.parse_args(argv)
     try:
         blueprint = load(args.blueprint, check=False)
@@ -392,11 +419,18 @@ def main(argv=None):
             overlay(blueprint, args.blueprint, args.out)
             print(json.dumps({"overlay": Path(args.out).as_posix()}))
         else:
-            spec = blockout(blueprint)
+            hints = []
+            if not args.no_refs and (Path(args.blueprint).parent / "refs" / "refs.json").exists():
+                import refgen  # here, not at the top: refgen imports this module
+                hints = refgen.blockout_hints(blueprint, args.blueprint)
+            spec = blockout(blueprint, hints)
             Path(args.out).parent.mkdir(parents=True, exist_ok=True)
             Path(args.out).write_text(json.dumps(spec, indent=1) + "\n", encoding="utf-8")
-            print(json.dumps({"blockout": Path(args.out).as_posix(), "parts": len(spec["parts"]),
-                              "assumed": {p["id"]: p["assumed"] for p in spec["parts"] if p["assumed"]}}, separators=(",", ":")))
+            result = {"blockout": Path(args.out).as_posix(), "parts": len(spec["parts"]),
+                      "assumed": {p["id"]: p["assumed"] for p in spec["parts"] if p["assumed"]}}
+            if any(p.get("generated") for p in spec["parts"]):
+                result["from_generated"] = {p["id"]: p["generated"] for p in spec["parts"] if p.get("generated")}
+            print(json.dumps(result, separators=(",", ":")))
     except BlueprintError as error:
         print(error, file=sys.stderr)
         return 2

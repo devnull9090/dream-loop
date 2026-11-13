@@ -352,6 +352,67 @@ class GenerateTest(RefgenCase):
             self.assertLess(image.width, 1600)
 
 
+class BlockoutTest(RefgenCase):
+    """A generated view the user approved for the purpose fills in what the target shows from no direction."""
+
+    def setUp(self):
+        super().setUp()
+        data = complete()
+        data["views"] = data["views"][:1]  # the target shows the side only
+        for part in data["parts"]:
+            part["boxes"].pop("front")
+        data["measures"] = refgen.blueprints.derive(data)
+        self.blueprint.write_text(json.dumps(data), encoding="utf-8")
+        self.boxes = ["--box", "head=0.40,0.117,0.20,0.17", "--box", "body=0.344,0.286,0.3125,0.574"]
+
+    def blockout(self, *extra):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            status = refgen.blueprints.main(["blockout", str(self.blueprint), "--out", str(self.root / "blockout.json"), *extra])
+        self.assertEqual(status, 0)
+        return json.loads(out.getvalue()), {p["id"]: p for p in json.loads((self.root / "blockout.json").read_text(encoding="utf-8"))["parts"]}
+
+    def test_depth_comes_from_a_generated_view_only_after_the_image_and_its_boxes_are_both_approved(self):
+        result, before = self.blockout()
+        self.assertEqual(result["assumed"], {"head": ["width"], "body": ["width"]})
+        self.bp("generate", "--view", "front")
+        self.assertEqual(self.bp("boxes", "view-front-1", *self.boxes)[0], 2)  # the image itself is not approved yet
+        self.bp("approve", "view-front-1")
+        status, marked, err = self.bp("boxes", "view-front-1", *self.boxes)
+        self.assertEqual((status, err, marked["boxes"]), (0, "", ["body", "head"]))
+        self.assertTrue((self.refs / "view-front-1.boxes.png").exists())
+        self.assertEqual(self.blockout()[1], before)  # boxes drawn, but the user has not accepted them for the blockout
+        self.assertEqual(self.bp("approve", "view-front-1", "--for-blockout")[1][0]["state"], "approved for the blockout")
+        result, parts = self.blockout()
+        self.assertEqual((result["assumed"], result["from_generated"]), ({}, {"head": ["view-front-1"], "body": ["view-front-1"]}))
+        self.assertAlmostEqual(parts["body"]["size"][0], 160 / 570, delta=0.01)  # width, read off the generated front view
+        self.assertEqual(parts["body"]["size"][1:], before["body"]["size"][1:])  # depth and height stay as the target gives them
+        self.assertEqual(parts["body"]["centre"][2], before["body"]["centre"][2])
+        self.assertEqual(self.blockout("--no-refs")[1], before)
+        self.bp("boxes", "view-front-1", *self.boxes)  # redrawn boxes need the user's eye again
+        self.assertEqual(self.blockout()[1], before)
+
+    def test_a_generated_view_never_changes_what_the_target_settles(self):
+        self.blueprint.write_text(json.dumps(complete()), encoding="utf-8")  # side and front are both on the target
+        _, before = self.blockout()
+        self.bp("generate", "--view", "front")
+        self.bp("approve", "view-front-1")
+        self.bp("boxes", "view-front-1", "--box", "head=0.36,0.117,0.28,0.17", "--box", "body=0.344,0.286,0.3125,0.574")
+        self.bp("approve", "view-front-1", "--for-blockout")
+        result, parts = self.blockout()
+        self.assertEqual(parts, before)
+        self.assertNotIn("from_generated", result)
+
+    def test_only_level_views_and_sound_boxes_are_accepted(self):
+        self.bp("generate", "--view", "top", "--view", "front")
+        self.bp("approve", "view-top-1", "view-front-1")
+        self.assertIn("only a front, back, left or right view", self.bp("boxes", "view-top-1", *self.boxes)[2])
+        self.assertIn("unknown part", self.bp("boxes", "view-front-1", "--box", "tail=0.4,0.1,0.2,0.2")[2])
+        self.assertIn("reaches outside the subject", self.bp("boxes", "view-front-1", "--box", "head=0.0,0.0,0.5,0.5")[2])
+        self.assertIn("x,y,w,h", self.bp("boxes", "view-front-1", "--box", "head=wide")[2])
+        self.assertEqual(self.bp("approve", "view-front-1", "--for-blockout")[0], 2)  # no boxes yet
+
+
 class CheckTest(RefgenCase):
     def check(self, image, part=None):
         blueprint = refgen.blueprints.load(self.blueprint)
