@@ -56,6 +56,8 @@ python SCRIPTS/refgen.py plan --blueprint .dream-loop/blueprint.json
 
 If it suggests views, read [generated-references.md](generated-references.md) and offer them to the user with the estimated cost. It is their decision, they choose the provider and model, and they store the API key themselves; never ask for a key in the chat. Nothing generated is used until the user has seen it and approved it, and an approved image is still only a reading aid: the target stays the authority for every measure and every judgement. If the user declines, or has no key, carry on without.
 
+If the target shows the subject only in an action pose, also offer to generate a neutral-pose turnaround (front, side, back) and model from that, posing the model once it is rigged. That replaces the target, so it needs the user's explicit approval of the turnaround board; see "Modelling from a neutral-pose turnaround" in [generated-references.md](generated-references.md).
+
 ## 2. Build the blockout
 
 ```sh
@@ -139,7 +141,7 @@ A part is `open` until a critic passes it, `passing` until a second confirms it,
   python SCRIPTS/ledger.py add .dream-loop/ledger.json --part head --fact "eye diameter is 0.04 H" --key head.eye.diameter --value 0.04 --source "round 3"
   ```
   Every later critic of that part receives it as a constraint, and one that contradicts a keyed fact without evidence is rejected.
-- **Generated references never override the target.** An image generated from the target and approved by the user helps you and a critic read it. It settles no measure, fails no gate, and loses every disagreement with the target. Unapproved images are not used at all.
+- **Generated references never override the target.** An image generated from the target and approved by the user helps you and a critic read it. It settles no measure, fails no gate, and loses every disagreement with the target. Unapproved images are not used at all. The one way a generated image becomes the target is the user approving a turnaround board as the new target, which restarts the loop.
 - **One camera per view.** Captures taken with any other camera are not comparable with earlier rounds and fail the capture check.
 - **Engine captures drift.** A lock is watched through the Blender model's hash and through the part's own pixels in the capture. If two captures of an unchanged model make `parts.py` report locked parts as changed, pass a higher `--drift`. A neighbour moving in front of a locked part changes which of its pixels show and can trip the check; unlock it with that reason if so.
 

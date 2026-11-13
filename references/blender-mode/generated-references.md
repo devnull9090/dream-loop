@@ -11,7 +11,7 @@ This step is optional, costs money, and is the user's decision each time. Offer 
 
 ## The rule
 
-A generated image is supplementary evidence. It is never the target.
+A generated image is supplementary evidence. It does not become the target on its own; only the user can make it one, by approving a turnaround as the new target (see "Modelling from a neutral-pose turnaround").
 
 - The approved design stays the authority. Measures come from the blueprint's boxes on the approved design, and the view-match and layout gates never look at a generated image.
 - The one number a generated view may supply is an extent the approved design shows from no direction, for the blockout only, and only after the user approves that view for it (see "Depth for the blockout").
@@ -76,12 +76,13 @@ python SCRIPTS/refgen.py plan     --blueprint .dream-loop/blueprint.json --view 
 python SCRIPTS/refgen.py generate --blueprint .dream-loop/blueprint.json --view front --view left --part foot_l
 ```
 
-`plan` sends nothing. It prints the exact prompt for each image, the inputs each will carry and the estimated cost. Tell the user the count and the estimate before running `generate`. The estimate is rough: it comes from the provider's token rates and a token table published for earlier models. The real cost of each call is recorded afterwards as `cost_usd`.
+`plan` sends nothing. It prints the exact prompt for each image, the inputs each will carry and the estimated cost. Tell the user the count and the estimate before running `generate`. The estimate is rough: it comes from the provider's token rates and one measured call (a 1024x1024 view at `high` from `gpt-image-2.6-sunburst` cost $0.065 on 2026-11-12). The real cost of each call is recorded afterwards as `cost_usd`.
 
 `generate` stops before sending anything if the batch is larger than `max_batch` or its estimate is above `max_cost_usd`. Raise either only on purpose, with `--max-batch` or `--max-cost`, after the user has agreed to the cost. A failed or timed-out call is never retried automatically: a timeout may still have been charged. Images made before the failure are kept.
 
 - `--view NAME`: `front`, `back`, `left`, `right` (the subject's own left and right), `top`, `three_quarter_left`, `three_quarter_right`, `three_quarter_back_left`, `three_quarter_back_right`.
 - `--part ID`: a close-up from the design's own angle, the safest kind, since nothing has to be imagined. `--part ID@VIEW` turns it, for a part the design shows from one side.
+- `--pose neutral`: for views, a symmetric modelling stance instead of the design's own pose. See "Modelling from a neutral-pose turnaround".
 - `--from VIEW`: which blueprint view to work from. By default a view uses the reference view, and a close-up the view that shows the part largest.
 - `--with REF`: also send an approved generated reference, so that a back view stays consistent with an accepted front view. The design still outranks it.
 - `--note "..."`: one extra instruction for these images, for a retry: "the left hand has three claws, not four".
@@ -133,9 +134,41 @@ What it changes is narrow on purpose:
 
 The blueprint, its `measures`, the view-match gate and the measured layout are untouched: the inner loop still checks the model against the target alone. A generated view that disagrees with the target therefore cannot make the model pass or fail anything; it can only give a part a poor starting depth, which is what the assumption gave it before. Check those parts by eye, as you would the `assumed` ones.
 
+## Modelling from a neutral-pose turnaround
+
+A design drawn in an action pose (hunched, mid-stride, one arm forward) is a poor thing to model from: limbs are foreshortened, parts hide each other, and nothing is symmetric. Characters are normally modelled in a neutral stance from front, side and back views, rigged, and posed afterwards. If the approved design shows only an action pose, offer the user this route. It is their decision, because it replaces what the loop measures against.
+
+1. **Generate the front view in a neutral stance** and get it approved:
+   ```sh
+   python SCRIPTS/refgen.py generate --blueprint .dream-loop/blueprint.json --pose neutral --view front
+   ```
+   The prompt keeps every rule about the design and changes only the pose line: upright, symmetric, limbs a little away from the body, every part the same length, thickness, shape and count as in the design.
+2. **Generate the other views from it**, so they share one stance and one reading of the design:
+   ```sh
+   python SCRIPTS/refgen.py generate --blueprint .dream-loop/blueprint.json --pose neutral --with view-front-1 --view left --view back
+   ```
+   A top view and the other side are optional. Get each approved.
+3. **Lay them out as a board:**
+   ```sh
+   python SCRIPTS/refgen.py board --blueprint .dream-loop/blueprint.json view-front-1 view-left-1 view-back-1
+   ```
+   This writes `target-turnaround.png` and `blueprint-turnaround.json`: a starter blueprint with one view per panel (frame, subject box, exact camera yaw), the parts with their form notes and sampled colours carried over, and `design` naming the original image. Its part boxes and joint points are empty.
+4. **Ask the user to approve the board as the new target.** Say plainly what that means: the neutral proportions and every surface the original did not show (the front of a head seen from the side, the back) are the image model's reading. Once approved, they are the design the model is built and judged against.
+5. **Fill in the starter blueprint** as in [blueprint.md](blueprint.md): every part's box in every view that shows it, and the joints. Then:
+   ```sh
+   python SCRIPTS/blueprint.py validate .dream-loop/blueprint-turnaround.json --write
+   python SCRIPTS/refgen.py agree --blueprint .dream-loop/blueprint-turnaround.json
+   ```
+   `agree` compares each part's height and height above the base across the views. Views generated separately can disagree; it names each part that does ("head height: 0.35 H in front, 0.25 H in side"). Check the boxes first. If they are right, the views themselves disagree: regenerate the odd view with a `--note`, or ask the user which view the model follows and record it in the ledger.
+6. **Start the loop from the turnaround.** This is a change of target, so everything measured before is unmeasured: archive the old `cameras.json`, `inner/` and `rounds/`, and run the workflow from the blockout with the turnaround blueprint. With true front and side views the blockout has no `assumed` parts and the camera solve is nearly exact.
+7. **Keep the original design as the final check.** When the model is rigged, pose it as the original shows and review a capture against the original image with the review-only mode in [../review.md](../review.md). That is the test that the neutral model still is the approved design.
+
+Close-ups and views made from the original design stay current under a turnaround blueprint, because it names the original in `design`.
+
 ## How approved references are used
 
 - **By you**, as a reading aid: when checking the parts `blueprint.py blockout` lists under `assumed`, and when building a side the approved design hides.
 - **By part critics**: `parts.py prepare` puts a part's approved close-ups in its folder as `generated.png`, marked GENERATED, with the rule in `brief.json` that the TARGET crop wins any conflict and that a directive resting only on a generated picture cannot fail a gate. Approved views go to the `assembly` critic the same way.
 - **By the blockout**, for unseen extents only, when the user has approved a view `--for-blockout`.
+- **As the target**, only as a turnaround board the user has approved as the new target.
 - **Not** by the view-match gate, the measured layout or the blueprint's measures. Those stay on the approved design.

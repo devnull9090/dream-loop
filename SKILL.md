@@ -43,7 +43,7 @@ Store the image in `.dream-loop/target.png`.
 
 ## Extra reference images of a 3D subject
 
-In the Blender workflow, one approved image may show the subject from a single direction, or show a part too small to judge. `scripts/refgen.py` can generate other views and part close-ups from the approved image with an image model the user chooses (OpenAI to start). Offer it when the workflow says to; never run it unasked. The user stores the API key themselves with `refgen.py key`; never ask for a key in the chat or put one on a command line. Nothing generated is used until the user has seen and approved it, and a generated image never overrides the approved one. See [references/blender-mode/generated-references.md](references/blender-mode/generated-references.md).
+In the Blender workflow, one approved image may show the subject from a single direction, or show a part too small to judge. `scripts/refgen.py` can generate other views and part close-ups from the approved image with an image model the user chooses (OpenAI to start). Offer it when the workflow says to; never run it unasked. The user stores the API key themselves with `refgen.py key`; never ask for a key in the chat or put one on a command line. Nothing generated is used until the user has seen and approved it, and a generated image never overrides the approved one unless the user approves a neutral-pose turnaround as the new target. See [references/blender-mode/generated-references.md](references/blender-mode/generated-references.md).
 
 ## Time budget
 

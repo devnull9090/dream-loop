@@ -15,6 +15,9 @@ design as the input image and a prompt that forbids changing it.
   python refgen.py reject   --blueprint .dream-loop/blueprint.json view-front-1 --reason "six toes"
   python refgen.py boxes    --blueprint .dream-loop/blueprint.json view-front-1 --box head=0.4,0.1,0.2,0.2 --box body=...
   python refgen.py approve  --blueprint .dream-loop/blueprint.json view-front-1 --for-blockout
+  python refgen.py generate --blueprint .dream-loop/blueprint.json --pose neutral --view front
+  python refgen.py board    --blueprint .dream-loop/blueprint.json view-front-1 view-left-1 view-back-1
+  python refgen.py agree    --blueprint .dream-loop/blueprint-turnaround.json
 
 config    shows or sets the provider, model and options kept in .dream-loop/config.json.
 key       asks for the provider's API key without showing it and keeps it in .dream-loop/secrets.env,
@@ -35,7 +38,13 @@ boxes     marks the parts on an approved front, back, left or right view (x,y,w,
 three_quarter_back_left, three_quarter_back_right. --part is a part id, or PART@VIEW for a close-up
 from one of those views instead of the approved design's own angle.
 
-A generated image is supplementary evidence. The approved design stays the authority: measures
+--pose neutral asks for the view in a symmetric modelling stance instead of the design's own pose,
+the way a character is drawn to be modelled and rigged. board lays approved views of one pose side
+by side as a turnaround sheet and writes a starter blueprint for it; if the user approves that
+sheet as the new target, the loop models from it and the original design becomes the final check.
+agree compares each part's height across the views of a blueprint, to catch views that disagree.
+
+Otherwise a generated image is supplementary evidence. The approved design stays the authority: measures
 still come from its boxes, and a critic is told which images are generated and that the original
 wins any conflict. config and key need no dependencies; the rest need Pillow.
 """
@@ -277,11 +286,12 @@ class OpenAI(Provider):
     data_url_limit = 20_000_000  # documented maximum length of one image_url is 20,971,520
     # USD per million tokens, from the model pages on 2026-11-12. Override with "pricing" in the config.
     rates = {"text_input": 5.0, "image_input": 8.0, "image_output": 30.0, "as_of": "2026-11-12"}
-    # Output tokens per image. OpenAI publishes this table for its earlier image models only; it is
-    # used here as the nearest guide until a call reports real usage.
-    output_tokens = {"low": {"square": 272, "portrait": 408, "landscape": 400}, "medium": {"square": 1056, "portrait": 1584, "landscape": 1568},
-                     "high": {"square": 4160, "portrait": 6240, "landscape": 6208}}
-    input_tokens_guess = 1500  # per input image; not published
+    # Output tokens per image. One real call (gpt-image-2.6-sunburst, high, 1024x1024, 2026-11-12) used 1756
+    # output tokens and 992 tokens for one input image. The other cells are scaled from that by area and by the
+    # ratios in the table OpenAI publishes for its earlier models, so only high/square is a measured figure.
+    output_tokens = {"low": {"square": 115, "portrait": 172, "landscape": 172}, "medium": {"square": 446, "portrait": 669, "landscape": 669},
+                     "high": {"square": 1756, "portrait": 2634, "landscape": 2634}}
+    input_tokens_guess = 1000  # per input image
 
     def pricing(self):
         return {**self.rates, **(self.config.get("pricing") or {})}
@@ -334,7 +344,7 @@ class OpenAI(Provider):
         rates = self.pricing()
         usd = (tokens * rates["image_output"] + len(images) * self.input_tokens_guess * rates["image_input"] + len(prompt) / 4 * rates["text_input"]) / 1e6
         return round(usd, 3), (f"estimate from token rates of {rates['as_of']} (${rates['image_output']:g} per million image output tokens) "
-                               "and the output token table for OpenAI's earlier image models; the real cost is recorded after each call")
+                               "and one measured call; the real cost is recorded after each call")
 
     def cost(self, usage):
         if not isinstance(usage, dict) or not usage.get("output_tokens"):
@@ -491,7 +501,13 @@ def fill(body, values, path="template"):
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
-def build(blueprint, blueprint_path, job, config, provider, source=None, extra_refs=(), note=None):
+NEUTRAL = ("Pose: a neutral modelling stance, not the pose in image 1. The subject stands upright and symmetric with its weight even on both feet, "
+           "its head level and facing straight ahead, and its limbs relaxed and held a little away from the body so that no part hides another. "
+           "Changing the stance must not change any part: every part keeps the length, thickness, shape and count it has in image 1, as if the same "
+           "rigid parts were only turned at their joints.")
+
+
+def build(blueprint, blueprint_path, job, config, provider, source=None, extra_refs=(), note=None, pose_mode="design"):
     """Everything one job sends: the prompt, the input images and what each is, and the output size."""
     from PIL import Image
     root = Path(blueprint_path).parent
@@ -522,11 +538,14 @@ def build(blueprint, blueprint_path, job, config, provider, source=None, extra_r
         images.append({"role": "part crop", "view": view["id"], "box": [round(v, 4) for v in box], "data": png(crop, config["input_edge"], limit)})
         lines.append(f"Image {len(images)} is an enlarged crop of image 1 showing the {label(part['id'])} and a little around it. It is image 1's own pixels "
                      "magnified, so it is soft: use it to see which part is meant and where its edges are, not as a level of sharpness to copy.")
+    stance = ""
     for entry in extra_refs:
         images.append({"role": "generated reference", "ref": entry["id"],
                        "data": png(Image.open(root / "refs" / entry["file"]), config["input_edge"], limit)})
         lines.append(f"Image {len(images)} is an additional reference of the same subject ({entry['shows']}), generated earlier and accepted by the designer. "
                      "Stay consistent with it, but wherever it differs from image 1 in any way, image 1 is right.")
+        if pose_mode == "neutral" and entry.get("pose") == "neutral":
+            stance = f" Use exactly the stance shown in image {len(images)}: the same limb angles, seen from the new camera."
     if len(images) > provider.max_inputs:
         raise RefgenError(f"{len(images)} input images, but {provider.name} takes at most {provider.max_inputs}")
 
@@ -540,7 +559,9 @@ def build(blueprint, blueprint_path, job, config, provider, source=None, extra_r
         size = shape_size(1, 1, config) if job["view"] == "top" else shape_size(width, height, config)
         shows = f"{job['view'].replace('_', ' ')} view"
         values.update(view_name=job["view"].replace("_", " "), view_description=description, framing=framing,
-                      pose_clause=f": the {pose} pose shown in image 1", parts=", ".join(label(p["id"]) for p in blueprint["parts"]),
+                      pose_clause=f": the {view['pose']} pose shown in image 1",
+                      pose_rule=NEUTRAL + stance if pose_mode == "neutral" else f"Pose: the {view['pose']} pose shown in image 1. Do not re-pose, relax or animate the subject.",
+                      parts=", ".join(label(p["id"]) for p in blueprint["parts"]),
                       palette="; ".join(f"{label(p['id'])}: " + ", ".join(f"{c['name']} {c['hex']}" for c in colours_of(blueprint, p))
                                         for p in blueprint["parts"] if colours_of(blueprint, p) and not p.get("same_as")) or "as in image 1")
     else:
@@ -561,7 +582,10 @@ def build(blueprint, blueprint_path, job, config, provider, source=None, extra_r
                       neighbours=("It joins " + " and ".join(f"the {label(other)} at the {joint.replace('_', ' ')}" for other, joint in joined) + ".") if joined else "")
     if not re.fullmatch(r"\d+x\d+", size):
         raise RefgenError(f"size must be WIDTHxHEIGHT or \"auto\", not {size!r}")
+    if pose_mode == "neutral" and job["kind"] == "view":
+        shows += ", neutral pose"
     return {"job": job, "source": view["id"], "shows": shows, "prompt": fill(body, values, path), "images": images, "size": size,
+            "pose": "neutral" if pose_mode == "neutral" and job["kind"] == "view" else view["pose"],
             "background": background, "template": {"file": path.as_posix(), "sha256": sha(path.read_bytes())},
             "target": {"file": target_file.name, "sha256": sha(target_file.read_bytes())}}
 
@@ -594,14 +618,17 @@ def state(entry, folder, target_sha=None):
         return "stale: the image file is missing"
     if sha(file.read_bytes()) != entry["sha256"]:
         return "stale: the image file changed after it was generated"
-    if target_sha and entry["target"]["sha256"] != target_sha:
+    if target_sha and entry["target"]["sha256"] not in target_sha:
         return "stale: the approved design changed after this was generated"
     return "rejected" if entry.get("rejected") else "approved" if entry.get("approved") else "pending"
 
 
 def target_sha(blueprint, blueprint_path):
-    file = blueprints.target_path(blueprint, blueprint_path)
-    return sha(file.read_bytes()) if file.exists() else None
+    """Hashes of the images a reference may have been made from: the target, and the original design when the target is a turnaround built from it."""
+    files = [blueprints.target_path(blueprint, blueprint_path)]
+    if blueprint.get("design"):
+        files.append(Path(blueprint_path).parent / blueprint["design"])
+    return tuple(sha(f.read_bytes()) for f in files if f.exists())
 
 
 def approved(blueprint, blueprint_path, part=None, kind=None):
@@ -862,7 +889,7 @@ def prepared(args):
     missing = [name for name in args.with_ref or [] if name not in usable]
     if missing:
         raise RefgenError(f"--with {', '.join(missing)}: only an approved, current reference can be sent as an input")
-    built = [build(blueprint, args.blueprint, job, config, provider, args.source, [usable[n] for n in args.with_ref or []], args.note)
+    built = [build(blueprint, args.blueprint, job, config, provider, args.source, [usable[n] for n in args.with_ref or []], args.note, args.pose)
              for job in jobs_from(args, blueprint, args.blueprint)]
     for item in built:
         item["estimate"], item["estimate_note"] = provider.estimate(item["prompt"], item["images"], item["size"])
@@ -932,7 +959,7 @@ def generate(args):
             "source_view": item["source"], "file": f"{ref_id}.png", "sheet": f"{ref_id}.sheet.png", "sha256": sha(data), "size": list(generated.size),
             "provider": provider.name, "model": provider.model, "parameters": sent, "prompt": item["prompt"], "template": item["template"],
             "inputs": [{k: v for k, v in {**i, "sha256": sha(i["data"])}.items() if k != "data"} for i in item["images"]],
-            "target": item["target"], "background": item["background"],
+            "target": item["target"], "background": item["background"], "pose": item["pose"],
             "created": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
             "usage": usage, "cost_usd": provider.cost(usage), "estimated_cost_usd": item["estimate"], "approved": False,
         }
@@ -952,6 +979,88 @@ def generate(args):
     if state_of in ("tracked", "untracked-repo"):
         out["warning"] = f"{folder.as_posix()} is not ignored by git; add \"{root.name}/\" to .gitignore"
     return out, 1 if failed else 0
+
+
+def board(args):
+    """Approved views of one pose side by side as a turnaround sheet, with a starter blueprint for it."""
+    from PIL import Image
+    import masks
+    blueprint = blueprints.load(args.blueprint)
+    root = Path(args.blueprint).parent
+    folder = refs_dir(args.blueprint)
+    manifest = read_manifest(folder)
+    usable = {e["id"]: e for e in approved(blueprint, args.blueprint, kind="view")}
+    missing = [i for i in args.ids if i not in usable]
+    if missing:
+        raise RefgenError(f"{', '.join(missing)}: a board is built only from approved, current views (see `refgen.py list`)")
+    entries = [usable[i] for i in args.ids]
+    if len({e["view"] for e in entries}) != len(entries):
+        raise RefgenError("each view may appear once on a board")
+    poses = {e.get("pose") for e in entries}
+    if len(poses) != 1:
+        raise RefgenError(f"the views are in different poses ({', '.join(sorted(str(p) for p in poses))}); a board shows one pose")
+    height = 1024
+    panels = []
+    for entry in entries:
+        with Image.open(folder / entry["file"]) as image:
+            image = image.convert("RGB")
+            panels.append(image.resize((round(image.width * height / image.height), height), Image.LANCZOS))
+    sheet = Image.new("RGB", (sum(p.width for p in panels), height))
+    views, x = [], 0
+    for entry, panel in zip(entries, panels):
+        sheet.paste(panel, (x, 0))
+        keyed, flat = masks.border_key(panel)
+        box = masks.fraction_box(keyed)
+        if flat < 0.9 or box is None:
+            raise RefgenError(f"{entry['id']}: the subject could not be keyed off its background, so its box on the board is unknown")
+        frame = [x / sheet.width, 0.0, panel.width / sheet.width, 1.0]
+        views.append({"id": entry["view"], "pose": entry["pose"], "frame": [round(v, 4) for v in frame],
+                      "subject_box": [round(frame[0] + box[0] * frame[2], 4), round(box[1], 4), round(box[2] * frame[2], 4), round(box[3], 4)],
+                      "background": "auto", "camera": {**entry["camera"], "lens": 200}, "generated": entry["id"]})
+        x += panel.width
+    out = Path(args.out) if args.out else root / "target-turnaround.png"
+    sheet.save(out)
+    level = [v for v in views if abs(v["camera"]["pitch"]) < 45] or views
+    reference = next((v for v in level if abs(abs(v["camera"]["yaw"]) - 90) < 1), level[0])  # a side view foreshortens least
+    stub = {"version": 1, "subject": blueprint["subject"], "target": out.name, "design": blueprint.get("design") or blueprint["target"],
+            "reference_view": reference["id"], "reference_part": blueprint["reference_part"], "views": views,
+            "parts": [{**{k: p[k] for k in ("id", "objects", "same_as", "form") if k in p},
+                       **({"colours": [{"name": c["name"], "hex": c["hex"]} for c in p["colours"] if c.get("hex")]} if p.get("colours") else {}),
+                       "boxes": {}} for p in blueprint["parts"]],
+            "joints": [{"id": j["id"], "parts": j["parts"], "points": {}} for j in blueprint.get("joints") or []],
+            "tolerances": blueprint.get("tolerances") or {}}
+    stub_path = out.with_name("blueprint-turnaround.json")
+    stub_path.write_text(json.dumps(stub, indent=1) + "\n", encoding="utf-8")
+    manifest.setdefault("boards", []).append({"file": out.name, "sha256": sha(out.read_bytes()), "refs": [e["id"] for e in entries], "pose": entries[0]["pose"],
+                                              "created": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")})
+    write_manifest(folder, manifest)
+    return {"board": out.as_posix(), "blueprint": stub_path.as_posix(), "views": [v["id"] for v in views], "pose": entries[0]["pose"],
+            "next": "show the user the board. If they approve it as the new target, fill in every part's boxes and the joints' points in the starter "
+                    "blueprint, run `blueprint.py validate --write` and `refgen.py agree` on it, and start the loop from it; the original design "
+                    "stays as the final check once the model is posed"}
+
+
+def agree(args):
+    """Where the views of one pose disagree about a part's height or its height above the base, in H."""
+    blueprint = blueprints.load(args.blueprint)
+    tolerance = blueprints.tolerances(blueprint)
+    measures = blueprint.get("measures") or blueprints.derive(blueprint)
+    found, compared = [], 0
+    for pose in sorted({v["pose"] for v in blueprint["views"]}):
+        views = [v["id"] for v in blueprint["views"] if v["pose"] == pose and abs(v["camera"]["pitch"]) < 45]
+        for part in blueprint["parts"]:
+            seen = {v: measures[v]["parts"][part["id"]] for v in views if part["id"] in measures[v]["parts"]}
+            if len(seen) < 2:
+                continue
+            compared += 1
+            for key, name, allowed in (("height", "height", max(tolerance["size"] * max(m["height"] for m in seen.values()), tolerance["size_abs"])),
+                                       ("cy", "centre height", tolerance["position"])):
+                low, high = min(seen, key=lambda v: seen[v][key]), max(seen, key=lambda v: seen[v][key])
+                if seen[high][key] - seen[low][key] > allowed:
+                    found.append(f"{part['id']} {name}: {seen[high][key]} H in {high}, {seen[low][key]} H in {low}")
+    return {"agree": not found, "parts_compared": compared, "disagreements": found,
+            **({"note": "the views show this part at different sizes or heights. Check the boxes first; if they are right, the views themselves "
+                        "disagree: regenerate the odd one, or tell the user which view the model will follow"} if found else {})}, 1 if found else 0
 
 
 def listing(args):
@@ -1025,6 +1134,8 @@ def main(argv=None):
         command.add_argument("--from", dest="source", metavar="VIEW", help="Blueprint view to work from (default: the reference view; for a part, the view showing it largest)")
         command.add_argument("--with", dest="with_ref", action="append", metavar="REF", help="Also send this approved generated reference, to stay consistent with it; repeatable")
         command.add_argument("--note", help="One extra instruction for these images, added to the end of the prompt")
+        command.add_argument("--pose", choices=["design", "neutral"], default="design",
+                             help="For views: keep the design's own pose (default), or a symmetric modelling stance to model and rig from")
         if name == "generate":
             command.add_argument("--suggested", action="store_true", help="Also generate everything `plan` suggests")
         options(command, generation=True)
@@ -1040,6 +1151,12 @@ def main(argv=None):
                                  help="The user has also checked the part boxes on this view (refgen.py boxes) and accepts it setting the blockout's unseen extents")
         else:
             command.add_argument("--reason", required=True, help="What is wrong with it")
+    command = sub.add_parser("board")
+    command.add_argument("--blueprint", default=".dream-loop/blueprint.json")
+    command.add_argument("ids", nargs="+", metavar="ID", help="Approved views of one pose, in the order to lay them out")
+    command.add_argument("--out", help="Board image to write (default: target-turnaround.png beside the blueprint)")
+    command = sub.add_parser("agree")
+    command.add_argument("--blueprint", default=".dream-loop/blueprint.json")
     command = sub.add_parser("boxes")
     command.add_argument("--blueprint", default=".dream-loop/blueprint.json")
     command.add_argument("id", metavar="ID")
@@ -1080,6 +1197,10 @@ def main(argv=None):
             result = listing(args)
         elif args.command == "boxes":
             result = mark_boxes(args)
+        elif args.command == "board":
+            result = board(args)
+        elif args.command == "agree":
+            result, status = agree(args)
         else:
             result = decide(args, args.command == "approve")
     except (RefgenError, blueprints.BlueprintError, OSError, ValueError, KeyError) as error:

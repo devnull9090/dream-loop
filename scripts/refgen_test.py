@@ -322,7 +322,7 @@ class GenerateTest(RefgenCase):
         self.assertIn("above the limit of $0.05", err)
         status, result, _ = self.bp("plan", "--view", "front", "--view", "back")
         self.assertEqual((result["images"], result["estimated_cost_usd"]), (2, round(2 * result["jobs"][0]["estimated_cost_usd"], 2)))
-        self.assertAlmostEqual(result["jobs"][0]["estimated_cost_usd"], 0.21, delta=0.03)
+        self.assertAlmostEqual(result["jobs"][0]["estimated_cost_usd"], 0.10, delta=0.02)
         self.assertIn("estimate", result["estimate_note"])
         self.assertEqual(self.bp("generate", *views, "--max-batch", "5")[0], 0)
 
@@ -443,6 +443,68 @@ class BlockoutTest(RefgenCase):
         self.assertIn("reaches outside the subject", self.bp("boxes", "view-front-1", "--box", "head=0.0,0.0,0.5,0.5")[2])
         self.assertIn("x,y,w,h", self.bp("boxes", "view-front-1", "--box", "head=wide")[2])
         self.assertEqual(self.bp("approve", "view-front-1", "--for-blockout")[0], 2)  # no boxes yet
+
+
+class TurnaroundTest(RefgenCase):
+    """Views in a neutral modelling stance, laid out as a board the user may approve as the new target."""
+
+    def test_neutral_pose_replaces_the_keep_the_pose_rule_and_later_views_follow_the_first(self):
+        kept = self.bp("plan", "--view", "front")[1]["jobs"][0]["prompt"]
+        self.assertIn("Do not re-pose", kept)
+        neutral = self.bp("plan", "--view", "front", "--pose", "neutral")[1]["jobs"][0]
+        self.assertIn("a neutral modelling stance, not the pose in image 1", neutral["prompt"])
+        self.assertIn("must not change any part", neutral["prompt"])
+        self.assertNotIn("Do not re-pose", neutral["prompt"])
+        self.assertEqual(neutral["shows"], "front view, neutral pose")
+        self.bp("generate", "--view", "front", "--pose", "neutral")
+        self.assertEqual(self.manifest()[0]["pose"], "neutral")
+        self.bp("approve", "view-front-1")
+        self.bp("generate", "--view", "left", "--pose", "neutral", "--with", "view-front-1")
+        self.assertIn("Use exactly the stance shown in image 3", self.calls[-1]["body"]["prompt"])
+        self.assertNotIn("neutral modelling stance", self.bp("plan", "--part", "head", "--pose", "neutral")[1]["jobs"][0]["prompt"])
+
+    def test_a_board_is_built_only_from_approved_views_of_one_pose_and_comes_with_a_starter_blueprint(self):
+        self.bp("generate", "--view", "front", "--view", "left", "--pose", "neutral")
+        self.assertEqual(self.bp("board", "view-front-1", "view-left-1")[0], 2)  # not approved
+        self.bp("approve", "view-front-1", "view-left-1")
+        self.bp("generate", "--view", "back")
+        self.bp("approve", "view-back-1")
+        status, _, err = self.bp("board", "view-front-1", "view-back-1")
+        self.assertEqual(status, 2)
+        self.assertIn("different poses", err)
+        status, result, err = self.bp("board", "view-front-1", "view-left-1")
+        self.assertEqual((status, err, result["views"], result["pose"]), (0, "", ["front", "left"], "neutral"))
+        with Image.open(self.root / "target-turnaround.png") as image:
+            self.assertEqual(image.size, (2 * 683, 1024))
+        stub = json.loads((self.root / "blueprint-turnaround.json").read_text(encoding="utf-8"))
+        self.assertEqual((stub["target"], stub["design"], stub["reference_view"]), ("target-turnaround.png", "target.png", "left"))
+        self.assertEqual([(v["id"], v["camera"]["yaw"], v["generated"]) for v in stub["views"]], [("front", 0, "view-front-1"), ("left", 90, "view-left-1")])
+        self.assertAlmostEqual(stub["views"][1]["subject_box"][0], 0.5 + 0.5 * 176 / 512, delta=0.01)
+        self.assertEqual(stub["parts"][0]["colours"], [{"name": "skin", "hex": "#b42828"}])
+        self.assertEqual(stub["parts"][0]["boxes"], {})
+        # Filled in, the starter is a valid blueprint, and references made from the original design stay current under it.
+        for part, (front, left) in zip(stub["parts"], (([0.2, 0.117, 0.1, 0.17], [0.7, 0.117, 0.1, 0.17]), ([0.172, 0.286, 0.156, 0.574], [0.672, 0.286, 0.156, 0.574]))):
+            part["boxes"] = {"front": front, "left": left}
+        stub["joints"][0]["points"] = {"front": [0.25, 0.286]}
+        turnaround = self.root / "blueprint-turnaround.json"
+        turnaround.write_text(json.dumps(stub), encoding="utf-8")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(refgen.blueprints.main(["validate", str(turnaround), "--write"]), 0)
+        loaded = refgen.blueprints.load(turnaround)
+        self.assertEqual(len(refgen.approved(loaded, turnaround)), 3)
+        self.assertEqual(self.run_cli("agree", "--blueprint", str(turnaround))[1]["agree"], True)
+
+    def test_views_that_disagree_about_a_part_are_named(self):
+        status, result, _ = self.bp("agree")
+        self.assertEqual((status, result["agree"], result["parts_compared"]), (0, True, 2))
+        data = json.loads(self.blueprint.read_text(encoding="utf-8"))
+        data["parts"][0]["boxes"]["front"] = [0.7125, 0.1, 0.075, 0.28]  # the head is taller in the front view
+        data["measures"] = refgen.blueprints.derive(data)
+        self.blueprint.write_text(json.dumps(data), encoding="utf-8")
+        status, result, _ = self.bp("agree")
+        self.assertEqual(status, 1)
+        self.assertEqual(result["disagreements"][0], "head height: 0.35 H in front, 0.25 H in side")
 
 
 class CheckTest(RefgenCase):
